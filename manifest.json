@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.auxxed.steelseries-oled",
+  "name": "SteelSeries OLED",
+  "version": "1.0.0",
+  "author": "auxxed",
+  "license": "MIT",
+  "homepage": "https://github.com/auxxed/omarchy-steelseries-oled",
+  "description": "Puts the Omarchy wordmark on SteelSeries Apex OLED keyboards (Apex 7, Pro, and 5).",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

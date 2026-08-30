@@ -1,0 +1,8 @@
+# SteelSeries Apex OLED (Pro / 7 / 5, full-size and TKL). Lets the `input`
+# group write the vendor hidraw interface so the plugin can set the idle image
+# without root. This rule does not run any program.
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1610", MODE="0660", GROUP="input"
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1612", MODE="0660", GROUP="input"
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1614", MODE="0660", GROUP="input"
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1618", MODE="0660", GROUP="input"
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161c", MODE="0660", GROUP="input"
