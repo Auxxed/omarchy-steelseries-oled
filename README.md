@@ -1,14 +1,18 @@
 # SteelSeries OLED
 
-Omarchy shell plugin that puts the official **OMARCHY** wordmark on the
-OLED of a SteelSeries Apex keyboard.
+Omarchy plugin that puts the official **OMARCHY** wordmark on the OLED of a
+SteelSeries Apex keyboard.
+
+A keyboard icon in the bar shows whether the GIF is looping. Click it for
+status and a one-time udev install (polkit prompt). The service keeps
+streaming after you unplug and replug.
 
 ![Omarchy wordmark on a 128×40 Apex OLED](preview.png)
 
-When the plugin is enabled it watches for the keyboard, writes a 128×40
-black-and-white image to the idle screen, and writes it again after you
-unplug and replug. Using the keyboard's own OLED menus still works; the
-wordmark comes back the next time the device appears.
+The Apex OLED has no onboard animation storage — frames are streamed over
+HID — so the onboard OLED menus will lose the fight while the service is
+running. Use `apply.py --once` for a still wordmark if you want those menus
+back.
 
 ## Supported keyboards
 
@@ -18,83 +22,97 @@ Same 128×40 legacy OLED protocol:
 - Apex Pro and Apex Pro TKL (`1038:1610`, `1038:1614`)
 - Apex 5 (`1038:161c`)
 
-## Requirements
-
-- Omarchy (Quattro / `omarchy plugin add`)
-- Python 3 (stdlib only)
-- Membership in the `input` group (Omarchy's default user has this)
-- A one-time udev rule so hidraw is writable without root (see below)
-
 ## Install
 
 ```sh
 omarchy plugin add https://github.com/auxxed/omarchy-steelseries-oled.git --enable
 ```
 
-Then install the permission rule once:
+The widget lands on the right of the bar. Move it with:
+
+```sh
+omarchy bar move io.github.auxxed.steelseries-oled --section center
+```
+
+`python3` is the only runtime dependency (stdlib only). Omarchy already has it.
+
+### Keyboard access
+
+The OLED is `/dev/hidraw*` on USB vendor `1038`, interface 1. A one-time udev
+rule lets the seated session write it without root. The panel can install that
+rule through a polkit prompt (fixed bytes, not a copy of the plugin tree). By
+hand:
 
 ```sh
 sudo ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/install-udev.sh
 ```
 
-Unplug and replug the keyboard, or the script already triggers hidraw.
-After that, `omarchy restart shell` if the wordmark is not up yet.
+The rule is named `71-steelseries-apex-oled.rules` so `TAG+="uaccess"` is
+applied before systemd seat ACLs. It sets `MODE=0660` plus `uaccess` for the
+listed Apex PIDs. It does not run any program. Unplug and replug if the ACL
+does not land immediately.
 
-The udev rule only sets `MODE=0660` and `GROUP=input`. It does not run
-any program.
+## Usage
+
+- Left click the bar icon: open the status panel
+- In the panel, **Install udev rule** if the keyboard is present but not writable
+- `omarchy-shell io.github.auxxed.steelseries-oled status`
+- `omarchy-shell io.github.auxxed.steelseries-oled udev`
 
 ## Remove
 
 ```sh
-sudo ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/uninstall-udev.sh
 omarchy plugin remove io.github.auxxed.steelseries-oled
 ```
 
 If the plugin directory is already gone, delete the rule by hand:
 
 ```sh
-sudo rm -f /etc/udev/rules.d/99-steelseries-apex-oled.rules
+sudo rm -f /etc/udev/rules.d/71-steelseries-apex-oled.rules
 sudo udevadm control --reload-rules
 ```
 
-Removal does not factory-reset the OLED. Unplug the keyboard (or open
-its onboard menu) to leave the firmware logo showing again.
+Removal does not factory-reset the OLED. Unplug the keyboard (or open its
+onboard menu) to leave the firmware logo showing again. The udev rule, if you
+installed it, stays until you remove that file yourself.
 
 ## Manual apply
 
 ```sh
+# Loop the GIF in the foreground (Ctrl-C leaves the still wordmark)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py
+
+# Still wordmark only
+python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --once
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --invert
 ```
 
-`assets/omarchy-oled-128x40.png` and `.gif` are the same image, sized
-for SteelSeries GG if you ever set the idle screen from Windows.
+`assets/omarchy-oled-128x40.gif` is the looping idle animation. Regenerate it
+from the still wordmark with `python3 make_gif.py` (needs ImageMagick). The
+`.png` is the same still, sized for SteelSeries GG if you ever set a static
+idle screen from Windows.
+
+Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
+`apply.py`, `udev/71-steelseries-apex-oled.rules`.
 
 ## How it works
 
-A headless `service` plugin starts `apply.py --watch`. That process
-finds USB vendor `1038` on HID interface 1, then sends a 642-byte
-feature report (`0x61` + 640 packed pixels) — the same payload Linux
-Apex 7 tools have used for years.
+A headless `service` starts `apply.py --watch`. That process finds USB vendor
+`1038` on HID interface 1, then streams 642-byte feature reports (`0x61` + 640
+packed pixels) at 10 fps — the same payload Linux Apex 7 tools have used for
+years. JSON status lines drive the bar widget.
 
-The idle image lives in keyboard RAM. Firmware restores its own logo
-after a power cycle unless this service is running.
+The idle image lives in keyboard RAM. Firmware restores its own logo after a
+power cycle unless this service is running.
 
-## Publish
+## Marketplace
 
-This is a single-root Omarchy plugin (`manifest.json` at the repo root).
-List it at [omarchyplugins.com](https://omarchyplugins.com/publish.html):
-
-1. Push this repository to GitHub (public).
-2. Run `omarchy plugin validate .` on a checkout.
-3. Open a `[Plugin]: SteelSeries OLED` issue on
-   [HANCORE-linux/omarchy-plugin-marketplace](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml)
-   with category `Hardware` and tags `system, quickshell`.
+Category **Hardware**. Tags: `bar`, `quickshell`, `system`.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-The wordmark is the official Omarchy mark from `logo.svg` (MIT), rasterized
-to the Apex OLED's 128×40 1-bit panel. Omarchy and SteelSeries names are
-used to describe the hardware and desktop this plugin talks to.
+The wordmark is the official Omarchy mark from `logo.svg` (MIT), rasterized to
+the Apex OLED's 128×40 1-bit panel. Omarchy and SteelSeries names are used to
+describe the hardware and desktop this plugin talks to.

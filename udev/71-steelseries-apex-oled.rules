@@ -1,0 +1,6 @@
+# SteelSeries Apex OLED (Pro / 7 / 5, full-size and TKL).
+# TAG+="uaccess" lets the seated user write the vendor hidraw node without
+# being in the input group. This file is named 71- so 73-seat-late.rules
+# still applies the ACL; a 99- rule is too late and access never lands.
+# This rule does not run any program.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1610|1612|1614|1618|161c", MODE="0660", GROUP="input", TAG+="uaccess"

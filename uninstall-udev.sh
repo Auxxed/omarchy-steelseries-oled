@@ -8,11 +8,20 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-DEST="/etc/udev/rules.d/99-steelseries-apex-oled.rules"
-if [[ -f $DEST ]]; then
-  rm -f "$DEST"
+REMOVED=0
+for dest in \
+  /etc/udev/rules.d/71-steelseries-apex-oled.rules \
+  /etc/udev/rules.d/99-steelseries-apex-oled.rules \
+  /etc/udev/rules.d/99-steelseries-apex7-oled.rules
+do
+  if [[ -f $dest ]]; then
+    rm -f "$dest"
+    echo "Removed $dest"
+    REMOVED=1
+  fi
+done
+if [[ $REMOVED -eq 1 ]]; then
   udevadm control --reload-rules
-  echo "Removed $DEST"
 else
-  echo "No rule at $DEST"
+  echo "No SteelSeries OLED udev rule installed"
 fi
