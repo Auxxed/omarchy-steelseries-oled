@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Commons
 import qs.Ui
 
@@ -13,6 +12,7 @@ Panel {
   readonly property var barIdentity: hostWidget || root
   readonly property var oled: hostWidget && hostWidget.oled ? hostWidget.oled : null
   readonly property bool ready: !!oled
+  readonly property bool on: ready && oled.enabled
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool canOpen: bar !== null && anchorItem !== null
@@ -40,68 +40,178 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight)
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(520))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onActivateRequested: if (root.ready) root.oled.toggleEnabled()
       onTextKey: function(t) {
-        if ((t === "u" || t === "U") && root.ready) root.oled.installUdev()
+        if (t === " " && root.ready) root.oled.toggleEnabled()
+        else if ((t === "i" || t === "I") && root.ready) root.oled.toggleInvert()
+        else if ((t === "u" || t === "U") && root.ready && root.oled.needsUdev)
+          root.oled.installUdev()
       }
 
-      Column {
-        id: content
-        width: parent.width
-        spacing: Style.space(12)
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: content.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
 
-        PanelHero {
-          width: parent.width
-          title: "SteelSeries OLED"
-          meta: root.ready ? root.oled.statusLabel : "Starting…"
-          detail: root.ready && root.oled.devicePath !== ""
-            ? root.oled.devicePath
-            : "Apex 7 / Pro / 5"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
+        Column {
+          id: content
+          width: panelFlick.width
+          spacing: Style.space(10)
 
-        Text {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: "Streams the Omarchy wordmark GIF to the keyboard OLED while this plugin is enabled."
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-        }
+          PanelHero {
+            width: parent.width
+            title: "OLED"
+            meta: root.ready ? root.oled.statusLabel : "…"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconOpacity: root.on ? 1.0 : 0.4
+            iconComponent: Component {
+              Text {
+                textFormat: Text.PlainText
+                text: "\uF11C"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
+              }
+            }
+          }
 
-        Text {
-          visible: root.ready && (root.oled.needsUdev || root.oled.lastError !== "")
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: root.ready && root.oled.needsUdev
-            ? "The keyboard is there, but this session cannot write hidraw. Install the udev rule once."
-            : (root.ready ? root.oled.lastError : "")
-          color: Color.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-        }
+          Toggle {
+            width: parent.width
+            label: "Display"
+            checked: root.on
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: if (root.ready) root.oled.toggleEnabled()
+          }
 
-        Button {
-          visible: root.ready && root.oled.needsUdev
-          text: "Install udev rule"
-          foreground: root.foreground
-          onClicked: root.oled.installUdev()
-        }
+          Toggle {
+            width: parent.width
+            label: "Invert"
+            checked: root.ready && root.oled.invert
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: if (root.ready) root.oled.toggleInvert()
+          }
 
-        Text {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: "The Apex OLED has no onboard animation storage, so onboard menus lose the fight while the service is running. python3 apply.py --once leaves a still wordmark."
-          color: Qt.darker(root.foreground, 1.55)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
+          Image {
+            width: parent.width
+            height: 40
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            cache: false
+            smooth: false
+            source: root.ready ? root.oled.previewUrl : ""
+            opacity: root.on ? 1 : 0.4
+          }
+
+          Text {
+            width: parent.width
+            elide: Text.ElideMiddle
+            text: root.ready ? root.oled.sourceLabel : ""
+            color: Qt.darker(root.foreground, 1.45)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            visible: root.ready && root.oled.isCustom
+            text: "Contrast  " + (root.ready ? root.oled.threshold : 50) + "%"
+            color: Qt.darker(root.foreground, 1.45)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.letterSpacing: 1.2
+          }
+
+          PanelSlider {
+            visible: root.ready && root.oled.isCustom
+            width: parent.width
+            bar: root.bar
+            value: root.ready ? root.oled.threshold : 50
+            minimum: 10
+            maximum: 90
+            step: 5
+            integer: true
+            onReleased: function(v) { if (root.ready) root.oled.setThreshold(v) }
+          }
+
+          Text {
+            text: "Speed  " + (root.ready ? root.oled.delayMs : 100) + " ms"
+            color: Qt.darker(root.foreground, 1.45)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.letterSpacing: 1.2
+          }
+
+          PanelSlider {
+            width: parent.width
+            bar: root.bar
+            value: root.ready ? root.oled.delayMs : 100
+            minimum: 50
+            maximum: 400
+            step: 10
+            integer: true
+            onReleased: function(v) { if (root.ready) root.oled.setDelayMs(v) }
+          }
+
+          Button {
+            width: parent.width
+            text: root.ready && (root.oled.pickBusy || root.oled.importBusy)
+              ? "Importing…"
+              : "Choose image"
+            foreground: root.foreground
+            onClicked: {
+              if (!root.ready || root.oled.pickBusy || root.oled.importBusy) return
+              root.close()
+              root.oled.pickImage()
+            }
+          }
+
+          Button {
+            visible: root.ready && root.oled.isCustom
+            width: parent.width
+            text: "Use Omarchy"
+            foreground: root.foreground
+            onClicked: if (root.ready) root.oled.resetDefault()
+          }
+
+          Button {
+            visible: root.ready && root.oled.hasCustom && !root.oled.isCustom
+            width: parent.width
+            text: "Use last image"
+            foreground: root.foreground
+            onClicked: if (root.ready) root.oled.useCustom()
+          }
+
+          Button {
+            visible: root.ready && root.oled.needsUdev
+            width: parent.width
+            text: root.oled.udevBusy ? "Waiting…" : "Allow access"
+            foreground: root.foreground
+            onClicked: if (root.ready) root.oled.installUdev()
+          }
+
+          Text {
+            visible: root.ready && root.oled.lastError !== "" && !root.oled.needsUdev && !root.oled.udevBusy
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: root.ready ? root.oled.lastError : ""
+            color: Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
         }
       }
     }

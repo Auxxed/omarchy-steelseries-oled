@@ -25,7 +25,7 @@ Same 128×40 legacy OLED protocol:
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/auxxed/omarchy-steelseries-oled.git --enable
+omarchy plugin add https://github.com/Auxxed/omarchy-steelseries-oled.git --enable
 ```
 
 The widget lands on the right of the bar. Move it with:
@@ -34,7 +34,7 @@ The widget lands on the right of the bar. Move it with:
 omarchy bar move io.github.auxxed.steelseries-oled --section center
 ```
 
-`python3` is the only runtime dependency (stdlib only). Omarchy already has it.
+Runtime is `python3` (stdlib) for HID. Importing a custom GIF or still needs ImageMagick (`magick`), which Omarchy already ships.
 
 ### Keyboard access
 
@@ -54,10 +54,14 @@ does not land immediately.
 
 ## Usage
 
-- Left click the bar icon: open the status panel
-- In the panel, **Install udev rule** if the keyboard is present but not writable
-- `omarchy-shell io.github.auxxed.steelseries-oled status`
-- `omarchy-shell io.github.auxxed.steelseries-oled udev`
+- Left click the bar icon: open the panel
+- **Display** (or right-click the icon): turn the loop on or off
+- **Invert**: flip black and white
+- **Speed**: frame delay
+- **Contrast**: 1-bit threshold for a custom image
+- **Choose image** imports a GIF or still (png/jpg/webp/bmp), resized to 128×40 1-bit. **Use Omarchy** restores the bundled wordmark without deleting the last import; **Use last image** brings it back.
+- **Allow access** appears only when the keyboard is present but not writable
+- `omarchy-shell io.github.auxxed.steelseries-oled power`
 
 ## Remove
 

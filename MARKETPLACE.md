@@ -13,7 +13,7 @@ before you submit — marketplace validation clones that commit.
 
 ## Repository URL
 
-https://github.com/auxxed/omarchy-steelseries-oled
+https://github.com/Auxxed/omarchy-steelseries-oled
 
 ## Category
 
@@ -36,7 +36,8 @@ Please validate repository HEAD after push.
 Headless service + bar widget (`io.github.auxxed.steelseries-oled`) for
 SteelSeries Apex OLED keyboards (Apex 7 / Pro / 5, 128×40, USB `1038:1610|1612|1614|1618|161c`).
 
-- Runtime is `python3` from the Omarchy install (stdlib only). No network.
+- HID runtime is `python3` from the Omarchy install (stdlib only). No network.
+- Custom GIF/still import uses ImageMagick (`magick`), already on Omarchy.
 - Optional one-time udev rule: hidraw for those PIDs only, `MODE=0660` plus
   `TAG+="uaccess"`, file named `71-steelseries-apex-oled.rules` so seat ACLs
   still apply. The rule does not run any program.
@@ -45,7 +46,7 @@ SteelSeries Apex OLED keyboards (Apex 7 / Pro / 5, 128×40, USB `1038:1610|1612|
   `/etc/udev/rules.d/71-steelseries-apex-oled.rules` atomically, then
   `udevadm reload` + hidraw trigger. The plugin tree is never opened as root.
 - Without the keyboard the bar icon still runs and reports "No keyboard".
-- Install: `omarchy plugin add https://github.com/auxxed/omarchy-steelseries-oled.git --enable`
+- Install: `omarchy plugin add https://github.com/Auxxed/omarchy-steelseries-oled.git --enable`
 
 ## Submission checklist
 

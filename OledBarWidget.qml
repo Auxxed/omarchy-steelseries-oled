@@ -62,13 +62,15 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "\uF11C"
-    dimmed: root.ready && !root.oled.looping
+    text: root.ready && root.oled.enabled ? "\uF11C" : "\uF11C"
+    dimmed: !root.ready || !root.oled.enabled
+    active: root.ready && root.oled.enabled
     tooltipText: root.ready
-      ? ("SteelSeries OLED · " + root.oled.statusLabel)
-      : "SteelSeries OLED"
+      ? (root.oled.enabled ? "OLED on" : "OLED off")
+      : "OLED"
     onPressed: function(b) {
       if (b === Qt.LeftButton) root.toggle()
+      else if (b === Qt.RightButton && root.ready) root.oled.toggleEnabled()
     }
   }
 }
