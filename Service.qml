@@ -12,8 +12,12 @@ Item {
   property bool stopping: false
   property bool enabled: true
   property bool settingsLoaded: false
-  property bool isCustom: false
+  property string preset: "omarchy"
   property bool hasCustom: false
+  readonly property bool isCustom: preset === "custom"
+  readonly property bool isStatic: preset === "static"
+  readonly property bool isSpin: preset === "spin"
+
   property bool invert: false
   property int threshold: 50
   property int delayMs: 100
@@ -30,7 +34,7 @@ Item {
   readonly property string customDir: stateHome + "/omarchy/steelseries-oled"
   readonly property string customFrames: customDir + "/custom.frames"
   readonly property string customRest: customDir + "/custom.bin"
-  readonly property string customPreview: customDir + "/preview.png"
+  readonly property string customPreview: customDir + "/preview.gif"
   readonly property string customSource: customDir + "/" + (sourceFile !== "" ? sourceFile : "source.gif")
 
   readonly property string pluginDir: {
@@ -56,10 +60,19 @@ Item {
   readonly property bool present: state === "looping" || state === "denied"
   readonly property bool looping: enabled && state === "looping"
   readonly property bool needsUdev: enabled && present && !permission
-  readonly property string defaultPreview: pluginDir + "/assets/omarchy-oled-128x40.png"
+  readonly property string defaultPreview: pluginDir + "/assets/omarchy-oled-128x40.gif"
+  readonly property string staticPreview: pluginDir + "/assets/omarchy-oled-128x40.png"
+  readonly property string staticFrames: pluginDir + "/assets/omarchy-oled-static.frames"
+  readonly property string spinPreview: pluginDir + "/assets/omarchy-oled-spin.gif"
+  readonly property string spinFrames: pluginDir + "/assets/omarchy-oled-spin.frames"
+  readonly property string bundledRest: pluginDir + "/assets/omarchy-oled-128x40.bin"
+  readonly property var bundledOrder: ["omarchy", "static", "spin"]
   readonly property string previewUrl: {
-    var path = isCustom ? customPreview : defaultPreview
-    return "file://" + path + "#" + previewRev
+    var path = defaultPreview
+    if (isCustom) path = customPreview
+    else if (isStatic) path = staticPreview
+    else if (isSpin) path = spinPreview
+    return "file://" + path
   }
   readonly property string statusLabel: {
     if (!enabled) return "Off"
@@ -76,15 +89,18 @@ Item {
     if (isCustom) {
       cmd.push("--frames", customFrames)
       cmd.push("--rest", customRest)
+    } else if (isStatic) {
+      cmd.push("--frames", staticFrames)
+      cmd.push("--rest", bundledRest)
+    } else if (isSpin) {
+      cmd.push("--frames", spinFrames)
+      cmd.push("--rest", bundledRest)
     }
     return cmd
   }
 
   function restCommand() {
-    var cmd = ["python3", "-u", helper, "--once"]
-    if (invert) cmd.push("--invert")
-    if (isCustom) cmd.push("--rest", customRest)
-    return cmd
+    return ["python3", "-u", helper, "--release"]
   }
 
   function setEnabled(on) {
@@ -155,24 +171,45 @@ Item {
     importImage(customSource)
   }
 
-  function resetDefault() {
-    isCustom = false
-    sourceLabel = "Omarchy"
-    previewRev = previewRev + 1
-    lastError = ""
-    if (settingsLoaded) scheduleSave()
-    if (enabled) startWatch()
-  }
-
-  function useCustom() {
-    if (!hasCustom) return
-    isCustom = true
-    if (sourceLabel === "" || sourceLabel === "Omarchy") sourceLabel = "Custom"
+  function setPreset(name) {
+    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "custom")
+      name = "omarchy"
+    preset = name
+    if (name === "spin") {
+      sourceLabel = "Spin"
+      delayMs = 70
+    } else if (name === "static") {
+      sourceLabel = "Static"
+      delayMs = 100
+    } else if (name === "omarchy") {
+      sourceLabel = "Omarchy"
+      delayMs = 100
+    }
     previewRev = previewRev + 1
     lastError = ""
     if (settingsLoaded) scheduleSave()
     if (enabled) startWatch()
     else setEnabled(true)
+  }
+
+  function resetDefault() {
+    setPreset("omarchy")
+  }
+
+  function useSpin() {
+    setPreset("spin")
+  }
+
+  function cycleBundled() {
+    var i = bundledOrder.indexOf(preset)
+    setPreset(bundledOrder[(i + 1) % bundledOrder.length])
+  }
+
+  function useCustom() {
+    if (!hasCustom) return
+    if (sourceLabel === "" || sourceLabel === "Omarchy" || sourceLabel === "Static" || sourceLabel === "Spin")
+      sourceLabel = "Custom"
+    setPreset("custom")
   }
 
   function setInvert(on) {
@@ -181,10 +218,6 @@ Item {
     invert = on
     if (settingsLoaded) scheduleSave()
     if (enabled) startWatch()
-    else if (pluginDir !== "") {
-      restProcess.command = restCommand()
-      restProcess.running = true
-    }
   }
 
   function toggleInvert() {
@@ -247,7 +280,7 @@ Item {
   function loadSettings(raw) {
     if (settingsLoaded) return
     var on = true
-    var custom = false
+    var nextPreset = "omarchy"
     var label = "Omarchy"
     var inv = false
     var thr = 50
@@ -257,7 +290,9 @@ Item {
       try {
         var obj = JSON.parse(raw)
         if (obj && obj.enabled === false) on = false
-        if (obj && obj.source === "custom") custom = true
+        if (obj && obj.source === "custom") nextPreset = "custom"
+        else if (obj && obj.source === "static") nextPreset = "static"
+        else if (obj && obj.source === "spin") nextPreset = "spin"
         if (obj && obj.label) label = String(obj.label)
         if (obj && obj.invert === true) inv = true
         if (obj && obj.threshold !== undefined) thr = Math.max(5, Math.min(95, Math.round(Number(obj.threshold))))
@@ -269,8 +304,11 @@ Item {
     threshold = thr
     delayMs = delay
     sourceFile = srcFile
-    isCustom = custom
-    sourceLabel = custom ? label : "Omarchy"
+    preset = nextPreset
+    if (nextPreset === "spin") sourceLabel = "Spin"
+    else if (nextPreset === "static") sourceLabel = "Static"
+    else if (nextPreset === "custom") sourceLabel = label || "Custom"
+    else sourceLabel = "Omarchy"
     settingsLoaded = true
     setEnabled(on)
   }
@@ -283,7 +321,7 @@ Item {
   function flushSettings() {
     settingsFile.setText(JSON.stringify({
       enabled: enabled,
-      source: isCustom ? "custom" : "default",
+      source: preset,
       label: sourceLabel,
       invert: invert,
       threshold: threshold,
@@ -384,7 +422,7 @@ Item {
           delay = Math.max(50, Math.min(500, Math.round(Number(msg.delay_ms))))
       } catch (e) {}
       root.keepDelayOnImport = false
-      root.isCustom = true
+      root.preset = "custom"
       root.hasCustom = true
       root.sourceLabel = label
       root.sourceFile = srcFile
@@ -427,5 +465,9 @@ Item {
     restartTimer.stop()
     saveTimer.stop()
     watchProcess.running = false
+    if (pluginDir !== "" && !restProcess.running) {
+      restProcess.command = restCommand()
+      restProcess.running = true
+    }
   }
 }

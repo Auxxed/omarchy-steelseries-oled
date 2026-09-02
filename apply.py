@@ -24,6 +24,7 @@ PAYLOAD_BYTES = 128 * 40 // 8  # 640
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.bin")
 FRAMES_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.frames")
+IDLE_PATH = os.path.join(HERE, "assets", "steelseries-idle.bin")
 FRAMES_MAGIC = b"OLEDGIF1"
 POLL_SECONDS = 2.0
 DEFAULT_DELAY_S = 0.10
@@ -246,27 +247,13 @@ def import_image(src: str, out_dir: str, threshold: int = 50) -> dict[str, objec
     delay_ms = gif_delay_ms(src) or int(DEFAULT_DELAY_S * 1000)
     frames_path = os.path.join(out_dir, "custom.frames")
     rest_path = os.path.join(out_dir, "custom.bin")
-    preview_path = os.path.join(out_dir, "preview.png")
+    preview_png = os.path.join(out_dir, "preview.png")
+    preview_gif = os.path.join(out_dir, "preview.gif")
     with open(frames_path, "wb") as fh:
         fh.write(FRAMES_MAGIC + struct.pack("<HH", len(frames), delay_ms) + b"".join(frames))
     with open(rest_path, "wb") as fh:
         fh.write(frames[0])
-    with tempfile.NamedTemporaryFile(suffix=".raw") as raw:
-        raw.write(frames[0])
-        raw.flush()
-        subprocess.check_call(
-            [
-                magick,
-                "-size",
-                f"{OLED_W}x{OLED_H}",
-                "-depth",
-                "1",
-                f"gray:{raw.name}",
-                preview_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    write_preview(frames, delay_ms, preview_png, preview_gif, magick)
     label = os.path.basename(src)
     print(
         json.dumps(
@@ -283,6 +270,52 @@ def import_image(src: str, out_dir: str, threshold: int = 50) -> dict[str, objec
         flush=True,
     )
     return {"label": label, "frames": len(frames)}
+
+
+def write_preview(
+    frames: list[bytes],
+    delay_ms: int,
+    png_path: str,
+    gif_path: str,
+    magick: str,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        pngs: list[str] = []
+        for i, payload in enumerate(frames):
+            raw = os.path.join(tmp, f"f{i:03d}.gray")
+            png = os.path.join(tmp, f"f{i:03d}.png")
+            with open(raw, "wb") as fh:
+                fh.write(payload)
+            subprocess.check_call(
+                [
+                    magick,
+                    "-size",
+                    f"{OLED_W}x{OLED_H}",
+                    "-depth",
+                    "1",
+                    f"gray:{raw}",
+                    png,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            pngs.append(png)
+        shutil.copy2(pngs[0], png_path)
+        subprocess.check_call(
+            [
+                magick,
+                "-delay",
+                str(max(1, delay_ms // 10)),
+                "-loop",
+                "0",
+                *pngs,
+                "-colors",
+                "2",
+                gif_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def apply_once(payload: bytes, dev: str | None = None) -> str:
@@ -309,7 +342,8 @@ def play_loop(frames: list[bytes], delay_s: float, rest: bytes, dev: str | None 
             idx += 1
             time.sleep(delay_s)
     except KeyboardInterrupt:
-        send_feature_fd(fd, rest)
+        idle = load_static(False, IDLE_PATH) if os.path.isfile(IDLE_PATH) else rest
+        send_feature_fd(fd, idle)
         return path
     finally:
         os.close(fd)
@@ -378,13 +412,25 @@ def main() -> None:
     invert = "--invert" in raw
     watch_mode = "--watch" in raw
     once = "--once" in raw or "--static" in raw
-    args = [a for a in raw if a not in {"--invert", "--watch", "--once", "--static"}]
+    release_mode = "--release" in raw
+    args = [a for a in raw if a not in {"--invert", "--watch", "--once", "--static", "--release"}]
     import_src = take_opt(args, "--import")
     out_dir = take_opt(args, "--out-dir")
     frames_path = take_opt(args, "--frames")
     rest_path = take_opt(args, "--rest")
     threshold_opt = take_opt(args, "--threshold")
     delay_opt = take_opt(args, "--delay-ms")
+    if release_mode:
+        payload = open(IDLE_PATH, "rb").read() if os.path.isfile(IDLE_PATH) else bytes(PAYLOAD_BYTES)
+        if len(payload) != PAYLOAD_BYTES:
+            raise SystemExit(f"expected {PAYLOAD_BYTES}-byte idle bitmap at {IDLE_PATH}, got {len(payload)}")
+        try:
+            path = apply_once(payload, args[0] if args else None)
+        except FileNotFoundError:
+            print("Released OLED (no keyboard)")
+            return
+        print(f"Released OLED to SteelSeries idle on {path}")
+        return
     if import_src:
         import_image(
             import_src,

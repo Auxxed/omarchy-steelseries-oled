@@ -11,8 +11,8 @@ streaming after you unplug and replug.
 
 The Apex OLED has no onboard animation storage — frames are streamed over
 HID — so the onboard OLED menus will lose the fight while the service is
-running. Use `apply.py --once` for a still wordmark if you want those menus
-back.
+running. Turning Display off (or `apply.py --release`) restores the SteelSeries
+idle logo.
 
 ## Supported keyboards
 
@@ -55,11 +55,12 @@ does not land immediately.
 ## Usage
 
 - Left click the bar icon: open the panel
-- **Display** (or right-click the icon): turn the loop on or off
+- **Display** (or right-click the icon): turn the loop on or off. Off restores the SteelSeries idle logo.
 - **Invert**: flip black and white
 - **Speed**: frame delay
 - **Contrast**: 1-bit threshold for a custom image
-- **Choose image** imports a GIF or still (png/jpg/webp/bmp), resized to 128×40 1-bit. **Use Omarchy** restores the bundled wordmark without deleting the last import; **Use last image** brings it back.
+- **Cycle** walks bundled art: typewriter loop → still wordmark → 3D spin
+- **Choose image** imports a GIF or still (png/jpg/webp/bmp), resized to 128×40 1-bit. **Use last image** brings a custom import back.
 - **Allow access** appears only when the keyboard is present but not writable
 - `omarchy-shell io.github.auxxed.steelseries-oled power`
 
@@ -83,12 +84,15 @@ installed it, stays until you remove that file yourself.
 ## Manual apply
 
 ```sh
-# Loop the GIF in the foreground (Ctrl-C leaves the still wordmark)
+# Loop the GIF in the foreground (Ctrl-C restores the SteelSeries idle logo)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py
 
 # Still wordmark only
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --once
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --invert
+
+# Restore the SteelSeries idle logo
+python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --release
 ```
 
 `assets/omarchy-oled-128x40.gif` is the looping idle animation. Regenerate it

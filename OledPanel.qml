@@ -106,45 +106,77 @@ Panel {
             onClicked: if (root.ready) root.oled.toggleInvert()
           }
 
-          Image {
+          Column {
             width: parent.width
-            height: 40
-            fillMode: Image.PreserveAspectFit
-            asynchronous: true
-            cache: false
-            smooth: false
-            source: root.ready ? root.oled.previewUrl : ""
-            opacity: root.on ? 1 : 0.4
+            spacing: Style.space(6)
+
+            Item {
+              id: previewBox
+              width: parent.width
+              height: 40
+              property string url: root.ready ? root.oled.previewUrl : ""
+              property string token: url + "|" + (root.ready ? root.oled.previewRev : 0)
+
+              Loader {
+                id: previewLoader
+                anchors.fill: parent
+                sourceComponent: previewComp
+              }
+
+              Component {
+                id: previewComp
+                AnimatedImage {
+                  anchors.fill: parent
+                  fillMode: Image.PreserveAspectFit
+                  asynchronous: false
+                  cache: true
+                  smooth: false
+                  playing: true
+                  source: previewBox.url
+                  opacity: root.on ? 1 : 0.4
+                  onStatusChanged: if (status === AnimatedImage.Ready) playing = true
+                }
+              }
+
+              function reloadPreview() {
+                previewLoader.sourceComponent = null
+                Qt.callLater(function() { previewLoader.sourceComponent = previewComp })
+              }
+
+              onTokenChanged: reloadPreview()
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideMiddle
+              text: root.ready ? root.oled.sourceLabel : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
           }
 
           Text {
-            width: parent.width
-            elide: Text.ElideMiddle
-            text: root.ready ? root.oled.sourceLabel : ""
-            color: Qt.darker(root.foreground, 1.45)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Text {
-            visible: root.ready && root.oled.isCustom
             text: "Contrast  " + (root.ready ? root.oled.threshold : 50) + "%"
             color: Qt.darker(root.foreground, 1.45)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             font.letterSpacing: 1.2
+            opacity: root.ready && root.oled.isCustom ? 1 : 0.4
           }
 
           PanelSlider {
-            visible: root.ready && root.oled.isCustom
             width: parent.width
             bar: root.bar
+            enabled: root.ready && root.oled.isCustom
+            opacity: enabled ? 1 : 0.4
             value: root.ready ? root.oled.threshold : 50
             minimum: 10
             maximum: 90
             step: 5
             integer: true
-            onReleased: function(v) { if (root.ready) root.oled.setThreshold(v) }
+            onReleased: function(v) { if (root.ready && root.oled.isCustom) root.oled.setThreshold(v) }
           }
 
           Text {
@@ -180,25 +212,26 @@ Panel {
           }
 
           Button {
-            visible: root.ready && root.oled.isCustom
             width: parent.width
-            text: "Use Omarchy"
+            text: "Cycle"
             foreground: root.foreground
-            onClicked: if (root.ready) root.oled.resetDefault()
+            onClicked: if (root.ready) root.oled.cycleBundled()
           }
 
           Button {
-            visible: root.ready && root.oled.hasCustom && !root.oled.isCustom
+            visible: root.ready && root.oled.hasCustom
+            enabled: root.ready && root.oled.preset !== "custom"
+            opacity: enabled ? 1 : 0.4
             width: parent.width
             text: "Use last image"
             foreground: root.foreground
-            onClicked: if (root.ready) root.oled.useCustom()
+            onClicked: if (root.ready && root.oled.preset !== "custom") root.oled.useCustom()
           }
 
           Button {
             visible: root.ready && root.oled.needsUdev
             width: parent.width
-            text: root.oled.udevBusy ? "Waiting…" : "Allow access"
+            text: (root.ready && root.oled.udevBusy) ? "Waiting…" : "Allow access"
             foreground: root.foreground
             onClicked: if (root.ready) root.oled.installUdev()
           }

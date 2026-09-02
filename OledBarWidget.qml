@@ -62,9 +62,10 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.ready && root.oled.enabled ? "\uF11C" : "\uF11C"
-    dimmed: !root.ready || !root.oled.enabled
-    active: root.ready && root.oled.enabled
+    text: "\uF11C"
+    active: false
+    useActiveColor: false
+    dimmed: !(root.ready && root.oled.enabled)
     tooltipText: root.ready
       ? (root.oled.enabled ? "OLED on" : "OLED off")
       : "OLED"

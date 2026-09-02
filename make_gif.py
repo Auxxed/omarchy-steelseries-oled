@@ -5,6 +5,7 @@ Stdlib for the frame data. ImageMagick (`magick`) writes the .gif preview.
 """
 from __future__ import annotations
 
+import math
 import os
 import struct
 import subprocess
@@ -17,7 +18,11 @@ ASSETS = os.path.join(HERE, "assets")
 BIN_PATH = os.path.join(ASSETS, "omarchy-oled-128x40.bin")
 FRAMES_PATH = os.path.join(ASSETS, "omarchy-oled-128x40.frames")
 GIF_PATH = os.path.join(ASSETS, "omarchy-oled-128x40.gif")
+STATIC_FRAMES = os.path.join(ASSETS, "omarchy-oled-static.frames")
+SPIN_FRAMES = os.path.join(ASSETS, "omarchy-oled-spin.frames")
+SPIN_GIF = os.path.join(ASSETS, "omarchy-oled-spin.gif")
 DELAY_MS = 100
+SPIN_DELAY_MS = 70
 MAGIC = b"OLEDGIF1"
 
 # Ink bounding boxes for O M A R C H Y on the current 128x40 wordmark.
@@ -120,6 +125,83 @@ def wipe_out(src: list[list[int]], steps: int = 12) -> list[bytes]:
     return frames
 
 
+def plot(pix: list[list[int]], x: int, y: int) -> None:
+    if 0 <= x < W and 0 <= y < H:
+        pix[y][x] = 1
+
+
+def blit_letter_spin(
+    src: list[list[int]],
+    x0: int,
+    x1: int,
+    dst: list[list[int]],
+    theta: float,
+    dy: int = 0,
+) -> None:
+    width = x1 - x0 + 1
+    cx = (x0 + x1) / 2.0
+    scale = abs(math.cos(theta))
+    back = math.cos(theta) < 0
+    sink = int(round((1.0 - scale) * 1.5))
+    if scale < 0.14:
+        spine = int(round(cx))
+        for y in range(H):
+            sy = y - dy + sink
+            if sy < 0 or sy >= H:
+                continue
+            if any(src[sy][x] for x in range(x0, x1 + 1)):
+                plot(dst, spine, y)
+                plot(dst, spine + (1 if back else -1), y)
+        return
+    new_w = max(1, int(round(width * scale)))
+    for y in range(H):
+        sy = y - dy + sink
+        if sy < 0 or sy >= H:
+            continue
+        for i in range(new_w):
+            t = i / max(1, new_w - 1)
+            src_x = int(round(x1 - t * (width - 1) if back else x0 + t * (width - 1)))
+            dst_x = int(round(cx - (new_w - 1) / 2.0 + i))
+            if src[sy][src_x]:
+                plot(dst, dst_x, y)
+
+
+def compose_spin(src: list[list[int]], thetas: list[float]) -> list[list[int]]:
+    pix = blank()
+    for (x0, x1), theta in zip(LETTERS, thetas):
+        blit_letter_spin(src, x0, x1, pix, theta)
+    return pix
+
+
+def build_spin(src: list[list[int]]) -> list[bytes]:
+    frames: list[bytes] = []
+    n_letters = len(LETTERS)
+    steps = 12
+    # Cascade: each letter takes a full turn, slightly staggered.
+    stagger = 2
+    cascade = stagger * (n_letters - 1) + steps
+    for n in range(cascade):
+        thetas = []
+        for i in range(n_letters):
+            local = n - i * stagger
+            if local < 0:
+                thetas.append(0.0)
+            elif local < steps:
+                thetas.append(2 * math.pi * local / steps)
+            else:
+                thetas.append(0.0)
+        frames.append(pack(compose_spin(src, thetas)))
+    frames.extend(hold(src, 4))
+    # Whole word tumble, two turns.
+    together = 16
+    for n in range(together * 2):
+        theta = 2 * math.pi * n / together
+        thetas = [theta + i * 0.18 for i in range(n_letters)]
+        frames.append(pack(compose_spin(src, thetas)))
+    frames.extend(hold(src, 6))
+    return frames
+
+
 def build_frames(src: list[list[int]]) -> list[bytes]:
     frames: list[bytes] = []
     frames.extend(typewriter(src))
@@ -130,13 +212,13 @@ def build_frames(src: list[list[int]]) -> list[bytes]:
     return frames
 
 
-def write_frames_blob(frames: list[bytes], path: str) -> None:
-    blob = MAGIC + struct.pack("<HH", len(frames), DELAY_MS) + b"".join(frames)
+def write_frames_blob(frames: list[bytes], path: str, delay_ms: int = DELAY_MS) -> None:
+    blob = MAGIC + struct.pack("<HH", len(frames), delay_ms) + b"".join(frames)
     with open(path, "wb") as fh:
         fh.write(blob)
 
 
-def write_gif(frames: list[bytes], path: str) -> None:
+def write_gif(frames: list[bytes], path: str, delay_ms: int = DELAY_MS) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         pngs = []
         for i, frame in enumerate(frames):
@@ -162,7 +244,7 @@ def write_gif(frames: list[bytes], path: str) -> None:
             [
                 "magick",
                 "-delay",
-                str(DELAY_MS // 10),
+                str(max(1, delay_ms // 10)),
                 "-loop",
                 "0",
                 *pngs,
@@ -180,6 +262,13 @@ def main() -> None:
     write_gif(frames, GIF_PATH)
     print(f"wrote {len(frames)} frames ({DELAY_MS} ms) to {FRAMES_PATH}")
     print(f"wrote {GIF_PATH}")
+    write_frames_blob([pack(src)], STATIC_FRAMES)
+    print(f"wrote 1 static frame to {STATIC_FRAMES}")
+    spin = build_spin(src)
+    write_frames_blob(spin, SPIN_FRAMES, SPIN_DELAY_MS)
+    write_gif(spin, SPIN_GIF, SPIN_DELAY_MS)
+    print(f"wrote {len(spin)} frames ({SPIN_DELAY_MS} ms) to {SPIN_FRAMES}")
+    print(f"wrote {SPIN_GIF}")
 
 
 if __name__ == "__main__":
