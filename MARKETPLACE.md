@@ -39,7 +39,7 @@ SteelSeries Apex OLED keyboards (Apex 7 / Pro / 5, 128×40, USB `1038:1610|1612|
 - HID runtime is `python3` from the Omarchy install (stdlib only). No network.
 - Bundled art: Omarchy typewriter, still wordmark, 3D spin. Custom GIF/still
   import uses ImageMagick (`magick`), already on Omarchy.
-- Display off restores a SteelSeries idle wordmark instead of leaving the last frame.
+- Display off blanks the OLED instead of leaving the last frame.
 - Optional one-time udev rule: hidraw for those PIDs only, `MODE=0660` plus
   `TAG+="uaccess"`, file named `71-steelseries-apex-oled.rules` so seat ACLs
   still apply. The rule does not run any program.

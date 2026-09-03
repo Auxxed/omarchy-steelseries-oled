@@ -24,7 +24,6 @@ PAYLOAD_BYTES = 128 * 40 // 8  # 640
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.bin")
 FRAMES_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.frames")
-IDLE_PATH = os.path.join(HERE, "assets", "steelseries-idle.bin")
 FRAMES_MAGIC = b"OLEDGIF1"
 POLL_SECONDS = 2.0
 DEFAULT_DELAY_S = 0.10
@@ -342,8 +341,7 @@ def play_loop(frames: list[bytes], delay_s: float, rest: bytes, dev: str | None 
             idx += 1
             time.sleep(delay_s)
     except KeyboardInterrupt:
-        idle = load_static(False, IDLE_PATH) if os.path.isfile(IDLE_PATH) else rest
-        send_feature_fd(fd, idle)
+        send_feature_fd(fd, bytes(PAYLOAD_BYTES))
         return path
     finally:
         os.close(fd)
@@ -421,15 +419,12 @@ def main() -> None:
     threshold_opt = take_opt(args, "--threshold")
     delay_opt = take_opt(args, "--delay-ms")
     if release_mode:
-        payload = open(IDLE_PATH, "rb").read() if os.path.isfile(IDLE_PATH) else bytes(PAYLOAD_BYTES)
-        if len(payload) != PAYLOAD_BYTES:
-            raise SystemExit(f"expected {PAYLOAD_BYTES}-byte idle bitmap at {IDLE_PATH}, got {len(payload)}")
         try:
-            path = apply_once(payload, args[0] if args else None)
+            path = apply_once(bytes(PAYLOAD_BYTES), args[0] if args else None)
         except FileNotFoundError:
-            print("Released OLED (no keyboard)")
+            print("Cleared OLED (no keyboard)")
             return
-        print(f"Released OLED to SteelSeries idle on {path}")
+        print(f"Cleared OLED on {path}")
         return
     if import_src:
         import_image(

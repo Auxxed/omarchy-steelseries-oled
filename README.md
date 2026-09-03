@@ -11,8 +11,7 @@ streaming after you unplug and replug.
 
 The Apex OLED has no onboard animation storage — frames are streamed over
 HID — so the onboard OLED menus will lose the fight while the service is
-running. Turning Display off (or `apply.py --release`) restores the SteelSeries
-idle logo.
+running. Turning Display off (or `apply.py --release`) blanks the panel.
 
 ## Supported keyboards
 
@@ -55,7 +54,7 @@ does not land immediately.
 ## Usage
 
 - Left click the bar icon: open the panel
-- **Display** (or right-click the icon): turn the loop on or off. Off restores the SteelSeries idle logo.
+- **Display** (or right-click the icon): turn the loop on or off. Off blanks the panel.
 - **Invert**: flip black and white
 - **Speed**: frame delay
 - **Contrast**: 1-bit threshold for a custom image
@@ -84,14 +83,14 @@ installed it, stays until you remove that file yourself.
 ## Manual apply
 
 ```sh
-# Loop the GIF in the foreground (Ctrl-C restores the SteelSeries idle logo)
+# Loop the GIF in the foreground (Ctrl-C blanks the panel)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py
 
 # Still wordmark only
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --once
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --invert
 
-# Restore the SteelSeries idle logo
+# Blank the panel
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --release
 ```
 
