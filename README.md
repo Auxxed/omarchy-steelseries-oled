@@ -123,3 +123,11 @@ MIT. See [LICENSE](LICENSE).
 The wordmark is the official Omarchy mark from `logo.svg` (MIT), rasterized to
 the Apex OLED's 128×40 1-bit panel. Omarchy and SteelSeries names are used to
 describe the hardware and desktop this plugin talks to.
+
+`assets/stickfight.gif` is SteelSeries' own "Stick Fight" OLED gif from their
+[OLED customization blog post](https://steelseries.com/blog/steelseries-oled-gifs-and-customization-137).
+`assets/nightrunner.gif` is the "Night Runner" gif from
+[this r/steelseries post](https://www.reddit.com/r/steelseries/comments/zou9mm/heres_a_gif_for_the_oled_screen_featuring_michiru/).
+Both ship as bundled picks in the "grab a gif" cycle; the rest come from
+[nlog.us's SteelSeries OLED gif page](https://www.nlog.us/ps/steelseries_oled_gifs.html)
+and are fetched on demand rather than bundled.

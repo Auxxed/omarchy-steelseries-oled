@@ -21,8 +21,11 @@ GIF_PATH = os.path.join(ASSETS, "omarchy-oled-128x40.gif")
 STATIC_FRAMES = os.path.join(ASSETS, "omarchy-oled-static.frames")
 SPIN_FRAMES = os.path.join(ASSETS, "omarchy-oled-spin.frames")
 SPIN_GIF = os.path.join(ASSETS, "omarchy-oled-spin.gif")
+WAVES_FRAMES = os.path.join(ASSETS, "omarchy-oled-waves.frames")
+WAVES_GIF = os.path.join(ASSETS, "omarchy-oled-waves.gif")
 DELAY_MS = 100
 SPIN_DELAY_MS = 70
+WAVES_DELAY_MS = 60
 MAGIC = b"OLEDGIF1"
 
 # Ink bounding boxes for O M A R C H Y on the current 128x40 wordmark.
@@ -66,33 +69,61 @@ def copy_cols(src: list[list[int]], x0: int, x1: int, dst: list[list[int]]) -> N
             dst[y][x] = src[y][x]
 
 
-def draw_cursor(pix: list[list[int]], x: int) -> None:
+def draw_cursor(pix: list[list[int]], x: int, y0: int = 10, y1: int = 28) -> None:
     x0 = max(0, min(W - 3, x))
-    for y in range(10, 29):
+    for y in range(y0, y1 + 1):
         for dx in range(3):
             pix[y][x0 + dx] = 1
+
+
+def segment_letters(pix: list[list[int]]) -> list[tuple[int, int]]:
+    """Group ink into column runs so typewriter/spin/waves can animate
+    arbitrary rendered text the same way they animate the fixed wordmark."""
+    col_ink = [any(pix[y][x] for y in range(H)) for x in range(W)]
+    boxes: list[tuple[int, int]] = []
+    x = 0
+    while x < W:
+        if col_ink[x]:
+            x0 = x
+            while x < W and col_ink[x]:
+                x += 1
+            boxes.append((x0, x - 1))
+        else:
+            x += 1
+    return boxes or [(0, W - 1)]
+
+
+def ink_row_bounds(pix: list[list[int]]) -> tuple[int, int]:
+    rows = [y for y in range(H) if any(pix[y])]
+    if not rows:
+        return (10, 28)
+    return (min(rows), max(rows))
 
 
 def clone(pix: list[list[int]]) -> list[list[int]]:
     return [row[:] for row in pix]
 
 
-def typewriter(src: list[list[int]]) -> list[bytes]:
+def typewriter(
+    src: list[list[int]],
+    letters: list[tuple[int, int]] = LETTERS,
+    cursor_rows: tuple[int, int] = (10, 28),
+) -> list[bytes]:
     frames: list[bytes] = []
     shown = blank()
     frames.extend([pack(shown)] * 3)
-    for i, (x0, x1) in enumerate(LETTERS):
+    for i, (x0, x1) in enumerate(letters):
         copy_cols(src, x0, x1, shown)
         with_cursor = clone(shown)
-        if i + 1 < len(LETTERS):
-            draw_cursor(with_cursor, LETTERS[i + 1][0])
+        if i + 1 < len(letters):
+            draw_cursor(with_cursor, letters[i + 1][0], *cursor_rows)
         else:
-            draw_cursor(with_cursor, LETTERS[-1][1] + 2)
+            draw_cursor(with_cursor, letters[-1][1] + 2, *cursor_rows)
         frames.append(pack(with_cursor))
         frames.append(pack(clone(shown)))
     # Two cursor blinks on the finished wordmark.
     cursor = clone(src)
-    draw_cursor(cursor, LETTERS[-1][1] + 2)
+    draw_cursor(cursor, letters[-1][1] + 2, *cursor_rows)
     frames.extend([pack(cursor), pack(clone(src)), pack(cursor), pack(clone(src))])
     return frames
 
@@ -166,16 +197,18 @@ def blit_letter_spin(
                 plot(dst, dst_x, y)
 
 
-def compose_spin(src: list[list[int]], thetas: list[float]) -> list[list[int]]:
+def compose_spin(
+    src: list[list[int]], thetas: list[float], letters: list[tuple[int, int]] = LETTERS
+) -> list[list[int]]:
     pix = blank()
-    for (x0, x1), theta in zip(LETTERS, thetas):
+    for (x0, x1), theta in zip(letters, thetas):
         blit_letter_spin(src, x0, x1, pix, theta)
     return pix
 
 
-def build_spin(src: list[list[int]]) -> list[bytes]:
+def build_spin(src: list[list[int]], letters: list[tuple[int, int]] = LETTERS) -> list[bytes]:
     frames: list[bytes] = []
-    n_letters = len(LETTERS)
+    n_letters = len(letters)
     steps = 12
     # Cascade: each letter takes a full turn, slightly staggered.
     stagger = 2
@@ -190,21 +223,62 @@ def build_spin(src: list[list[int]]) -> list[bytes]:
                 thetas.append(2 * math.pi * local / steps)
             else:
                 thetas.append(0.0)
-        frames.append(pack(compose_spin(src, thetas)))
+        frames.append(pack(compose_spin(src, thetas, letters)))
     frames.extend(hold(src, 4))
     # Whole word tumble, two turns.
     together = 16
     for n in range(together * 2):
         theta = 2 * math.pi * n / together
         thetas = [theta + i * 0.18 for i in range(n_letters)]
-        frames.append(pack(compose_spin(src, thetas)))
+        frames.append(pack(compose_spin(src, thetas, letters)))
     frames.extend(hold(src, 6))
     return frames
 
 
-def build_frames(src: list[list[int]]) -> list[bytes]:
+def blit_letter_shift(
+    src: list[list[int]], x0: int, x1: int, dst: list[list[int]], dy: int
+) -> None:
+    for y in range(H):
+        sy = y - dy
+        if sy < 0 or sy >= H:
+            continue
+        for x in range(x0, x1 + 1):
+            if src[sy][x]:
+                dst[y][x] = 1
+
+
+def compose_wave(
+    src: list[list[int]], dys: list[int], letters: list[tuple[int, int]] = LETTERS
+) -> list[list[int]]:
+    pix = blank()
+    for (x0, x1), dy in zip(letters, dys):
+        blit_letter_shift(src, x0, x1, pix, dy)
+    return pix
+
+
+def build_waves(
+    src: list[list[int]], letters: list[tuple[int, int]] = LETTERS, cycles: int = 2
+) -> list[bytes]:
     frames: list[bytes] = []
-    frames.extend(typewriter(src))
+    n_letters = len(letters)
+    steps = 24
+    amplitude = 4
+    phase_step = (2 * math.pi / n_letters) * 1.1
+    for n in range(steps * cycles):
+        t = 2 * math.pi * n / steps
+        dys = [int(round(amplitude * math.sin(t - i * phase_step))) for i in range(n_letters)]
+        frames.append(pack(compose_wave(src, dys, letters)))
+    frames.extend(hold(src, 6))
+    return frames
+
+
+def build_frames(
+    src: list[list[int]],
+    letters: list[tuple[int, int]] = LETTERS,
+    cursor_rows: tuple[int, int] = (10, 28),
+) -> list[bytes]:
+    frames: list[bytes] = []
+    frames.extend(typewriter(src, letters, cursor_rows))
     frames.extend(hold(src, 18))
     frames.extend(scanline(src))
     frames.extend(hold(src, 12))
@@ -269,6 +343,11 @@ def main() -> None:
     write_gif(spin, SPIN_GIF, SPIN_DELAY_MS)
     print(f"wrote {len(spin)} frames ({SPIN_DELAY_MS} ms) to {SPIN_FRAMES}")
     print(f"wrote {SPIN_GIF}")
+    waves = build_waves(src)
+    write_frames_blob(waves, WAVES_FRAMES, WAVES_DELAY_MS)
+    write_gif(waves, WAVES_GIF, WAVES_DELAY_MS)
+    print(f"wrote {len(waves)} frames ({WAVES_DELAY_MS} ms) to {WAVES_FRAMES}")
+    print(f"wrote {WAVES_GIF}")
 
 
 if __name__ == "__main__":

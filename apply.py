@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
+from urllib.parse import urlparse
 
 VID = 0x1038
 # Apex Pro, Apex 7, Apex Pro TKL, Apex 7 TKL, Apex 5 — same 128x40 legacy OLED.
@@ -30,6 +32,21 @@ DEFAULT_DELAY_S = 0.10
 OLED_W, OLED_H = 128, 40
 MAX_IMPORT_BYTES = 40 * 1024 * 1024
 MAX_IMPORT_FRAMES = 96
+# Only host the "grab a random gif" panel button is allowed to reach.
+IMPORT_URL_HOSTS = {"www.nlog.us", "nlog.us"}
+# The real wordmark is a one-off logotype font with glyphs only for O/M/A/R/C/H/Y.
+# "omarchy" extends that same 15-unit-grid construction to the full alphabet,
+# digits, and basic punctuation, so short lockups can match the logo exactly —
+# but it has no lowercase (maps to caps) or extended punctuation. "jetbrains"
+# is the boldest full font on the system's font list, chosen for legibility
+# once shrunk to 128x40 and thresholded to 1-bit, and covers anything typed.
+TEXT_FONTS = {
+    "omarchy": os.path.join(HERE, "assets", "fonts", "OmarchyBlock-Regular.ttf"),
+    "jetbrains": "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf",
+}
+DEFAULT_TEXT_FONT = "jetbrains"
+MAX_TEXT_CHARS = 24
+TEXT_STYLES = {"typewriter", "static", "spin", "waves"}
 
 
 def hid_ioc_sfeature(length: int) -> int:
@@ -183,7 +200,137 @@ def gif_delay_ms(src: str) -> int:
     return max(50, min(500, ticks[0] * 10))
 
 
-def import_image(src: str, out_dir: str, threshold: int = 50) -> dict[str, object]:
+def fetch_url_to_tmp(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in IMPORT_URL_HOSTS:
+        raise SystemExit("url not allowed")
+    ext = os.path.splitext(parsed.path)[1].lower()
+    if ext not in {".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+        ext = ".gif"
+    req = urllib.request.Request(url, headers={"User-Agent": "omarchy-steelseries-oled"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = resp.read(MAX_IMPORT_BYTES + 1)
+    if len(data) > MAX_IMPORT_BYTES:
+        raise SystemExit("file too large")
+    tmp_dir = tempfile.mkdtemp(prefix="steelseries-oled-")
+    name = os.path.basename(parsed.path) or ("download" + ext)
+    tmp_path = os.path.join(tmp_dir, name)
+    with open(tmp_path, "wb") as fh:
+        fh.write(data)
+    return tmp_path
+
+
+def render_text_bitmap(text: str, font: str) -> bytes:
+    magick = shutil.which("magick")
+    if magick is None:
+        raise SystemExit("ImageMagick (magick) is required to render text")
+    text = text.strip()
+    if not text:
+        raise SystemExit("empty text")
+    if len(text) > MAX_TEXT_CHARS:
+        raise SystemExit(f"text too long (max {MAX_TEXT_CHARS} characters)")
+    font_path = TEXT_FONTS.get(font, TEXT_FONTS[DEFAULT_TEXT_FONT])
+    if not os.path.isfile(font_path):
+        raise SystemExit("text font not found")
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = os.path.join(tmp, "probe.png")
+        best = 8
+        for size in range(40, 5, -1):
+            subprocess.check_call(
+                [magick, "-background", "black", "-fill", "white",
+                 "-font", font_path, "-pointsize", str(size), f"label:{text}", probe],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            w = int(subprocess.check_output([magick, "identify", "-format", "%w", probe]))
+            h = int(subprocess.check_output([magick, "identify", "-format", "%h", probe]))
+            if w <= OLED_W - 4 and h <= OLED_H - 2:
+                best = size
+                break
+        raw_path = os.path.join(tmp, "text.raw")
+        subprocess.check_call(
+            [
+                magick,
+                "-background", "black",
+                "-fill", "white",
+                "-font", font_path,
+                "-pointsize", str(best),
+                f"label:{text}",
+                "-gravity", "center",
+                "-background", "black",
+                "-extent", f"{OLED_W}x{OLED_H}",
+                "-colorspace", "Gray",
+                "-threshold", "50%",
+                "-depth", "1",
+                f"gray:{raw_path}",
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        blob = open(raw_path, "rb").read()
+    if len(blob) != PAYLOAD_BYTES:
+        raise SystemExit("could not rasterize text")
+    return blob
+
+
+def render_text(
+    text: str,
+    style: str,
+    out_dir: str,
+    font: str = DEFAULT_TEXT_FONT,
+    preview_suffix: str | None = None,
+) -> dict[str, object]:
+    import make_gif
+
+    if style not in TEXT_STYLES:
+        style = "typewriter"
+    if font not in TEXT_FONTS:
+        font = DEFAULT_TEXT_FONT
+    blob = render_text_bitmap(text, font)
+    pix = make_gif.unpack(blob)
+    letters = make_gif.segment_letters(pix)
+    if style == "spin":
+        frames = make_gif.build_spin(pix, letters)
+        delay_ms = 70
+    elif style == "waves":
+        frames = make_gif.build_waves(pix, letters)
+        delay_ms = 60
+    elif style == "static":
+        frames = [make_gif.pack(pix)]
+        delay_ms = 100
+    else:
+        cursor_rows = make_gif.ink_row_bounds(pix)
+        frames = make_gif.build_frames(pix, letters, cursor_rows)
+        delay_ms = 100
+
+    os.makedirs(out_dir, exist_ok=True)
+    frames_path = os.path.join(out_dir, "text.frames")
+    rest_path = os.path.join(out_dir, "text.bin")
+    preview_png, preview_gif = preview_paths(out_dir, "text-preview", preview_suffix)
+    with open(frames_path, "wb") as fh:
+        fh.write(FRAMES_MAGIC + struct.pack("<HH", len(frames), delay_ms) + b"".join(frames))
+    with open(rest_path, "wb") as fh:
+        fh.write(blob)
+    magick = shutil.which("magick")
+    write_preview(frames, delay_ms, preview_png, preview_gif, magick)
+    result = {
+        "type": "text",
+        "label": text,
+        "style": style,
+        "font": font,
+        "frames": len(frames),
+        "delay_ms": delay_ms,
+    }
+    print(json.dumps(result, separators=(",", ":")), flush=True)
+    return result
+
+
+def import_image(
+    src: str,
+    out_dir: str,
+    threshold: int = 50,
+    label_override: str | None = None,
+    delay_scale: float | None = None,
+    preview_suffix: str | None = None,
+) -> dict[str, object]:
     magick = shutil.which("magick")
     if magick is None:
         raise SystemExit("ImageMagick (magick) is required to import images")
@@ -244,16 +391,17 @@ def import_image(src: str, out_dir: str, threshold: int = 50) -> dict[str, objec
     frames = [blob[i : i + PAYLOAD_BYTES] for i in range(0, len(blob), PAYLOAD_BYTES)]
     frames = sample_frames(frames, MAX_IMPORT_FRAMES)
     delay_ms = gif_delay_ms(src) or int(DEFAULT_DELAY_S * 1000)
+    if delay_scale:
+        delay_ms = clamp_int(round(delay_ms * delay_scale), 50, 500, delay_ms)
     frames_path = os.path.join(out_dir, "custom.frames")
     rest_path = os.path.join(out_dir, "custom.bin")
-    preview_png = os.path.join(out_dir, "preview.png")
-    preview_gif = os.path.join(out_dir, "preview.gif")
+    preview_png, preview_gif = preview_paths(out_dir, "preview", preview_suffix)
     with open(frames_path, "wb") as fh:
         fh.write(FRAMES_MAGIC + struct.pack("<HH", len(frames), delay_ms) + b"".join(frames))
     with open(rest_path, "wb") as fh:
         fh.write(frames[0])
     write_preview(frames, delay_ms, preview_png, preview_gif, magick)
-    label = os.path.basename(src)
+    label = label_override or os.path.basename(src)
     print(
         json.dumps(
             {
@@ -269,6 +417,19 @@ def import_image(src: str, out_dir: str, threshold: int = 50) -> dict[str, objec
         flush=True,
     )
     return {"label": label, "frames": len(frames)}
+
+
+def preview_paths(out_dir: str, base: str, preview_suffix: str | None) -> tuple[str, str]:
+    # Qt's AnimatedImage cache can serve a stale frame if the same preview
+    # path is overwritten in place, even with cache-busting URL tricks — so
+    # give each revision its own filename and drop the previous one.
+    for old in glob.glob(os.path.join(out_dir, f"{base}*.png")) + glob.glob(os.path.join(out_dir, f"{base}*.gif")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    name = f"{base}-{preview_suffix}" if preview_suffix else base
+    return os.path.join(out_dir, f"{name}.png"), os.path.join(out_dir, f"{name}.gif")
 
 
 def write_preview(
@@ -413,11 +574,18 @@ def main() -> None:
     release_mode = "--release" in raw
     args = [a for a in raw if a not in {"--invert", "--watch", "--once", "--static", "--release"}]
     import_src = take_opt(args, "--import")
+    import_url = take_opt(args, "--import-url")
     out_dir = take_opt(args, "--out-dir")
     frames_path = take_opt(args, "--frames")
     rest_path = take_opt(args, "--rest")
     threshold_opt = take_opt(args, "--threshold")
     delay_opt = take_opt(args, "--delay-ms")
+    label_opt = take_opt(args, "--label")
+    delay_scale_opt = take_opt(args, "--delay-scale")
+    preview_suffix_opt = take_opt(args, "--preview-suffix")
+    render_text_opt = take_opt(args, "--render-text")
+    style_opt = take_opt(args, "--style")
+    font_opt = take_opt(args, "--font")
     if release_mode:
         try:
             path = apply_once(bytes(PAYLOAD_BYTES), args[0] if args else None)
@@ -426,12 +594,27 @@ def main() -> None:
             return
         print(f"Cleared OLED on {path}")
         return
-    if import_src:
-        import_image(
-            import_src,
-            out_dir or os.path.join(os.path.expanduser("~"), ".local", "state", "omarchy", "steelseries-oled"),
-            threshold=clamp_int(threshold_opt, 5, 95, 50),
+    if render_text_opt is not None:
+        default_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "omarchy", "steelseries-oled")
+        render_text(
+            render_text_opt,
+            style_opt or "typewriter",
+            out_dir or default_dir,
+            font=font_opt or DEFAULT_TEXT_FONT,
+            preview_suffix=preview_suffix_opt,
         )
+        return
+    if import_src or import_url:
+        default_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "omarchy", "steelseries-oled")
+        delay_scale = float(delay_scale_opt) if delay_scale_opt else None
+        if import_url:
+            tmp_path = fetch_url_to_tmp(import_url)
+            try:
+                import_image(tmp_path, out_dir or default_dir, threshold=clamp_int(threshold_opt, 5, 95, 50), label_override=label_opt, delay_scale=delay_scale, preview_suffix=preview_suffix_opt)
+            finally:
+                shutil.rmtree(os.path.dirname(tmp_path), ignore_errors=True)
+        else:
+            import_image(import_src, out_dir or default_dir, threshold=clamp_int(threshold_opt, 5, 95, 50), label_override=label_opt, delay_scale=delay_scale, preview_suffix=preview_suffix_opt)
         return
     delay_override = clamp_int(delay_opt, 50, 500, 0) if delay_opt is not None else None
     if delay_override == 0:
