@@ -1,7 +1,11 @@
 # SteelSeries OLED
 
-Omarchy plugin that puts the official **OMARCHY** wordmark on the OLED of a
-SteelSeries Apex keyboard.
+Omarchy plugin for the OLED on a SteelSeries Apex keyboard: the official
+**OMARCHY** wordmark by default, or a 3D spin/waves/static cycle of it, a
+custom GIF or still image, a random pull from a bundled or online gif
+library, or your own typed text — rendered in JetBrains Mono or in
+**Omarchy Block**, a companion display font built for this plugin from the
+wordmark's own letterforms.
 
 A keyboard icon in the bar shows whether the GIF is looping. Click it for
 status and a one-time udev install (polkit prompt). The service keeps
@@ -58,8 +62,15 @@ does not land immediately.
 - **Invert**: flip black and white (the panel preview follows)
 - **Speed**: frame delay
 - **Contrast**: 1-bit threshold for a custom image
-- **Cycle** walks bundled art: typewriter loop → still wordmark → 3D spin
+- **Omarchy Logo** cycles the bundled wordmark art: typewriter loop → still → 3D spin → waves
 - **Choose image** imports a GIF or still (png/jpg/webp/bmp), resized to 128×40 1-bit. **Use last image** brings a custom import back.
+- The **#** button grabs a random OLED gif — Stick Fight and Night Runner ship
+  with the plugin, the rest are fetched on demand from nlog.us. Right-click
+  to search and pick one by name instead of cycling.
+- Type your own text, then pick a **font** (JetBrains Mono for full
+  character coverage, or Omarchy Block to match the logo) and a **style**
+  (typewriter/static/spin/waves) — click either button to cycle, right-click
+  to pick from a list. **Use text** switches the OLED to it.
 - **Allow access** appears only when the keyboard is present but not writable
 - `omarchy-shell io.github.auxxed.steelseries-oled power`
 
@@ -92,15 +103,22 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --i
 
 # Blank the panel
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --release
+
+# Render typed text (style: typewriter/static/spin/waves, font: jetbrains/omarchy)
+python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
+  --render-text "HYPR" --style spin --font omarchy \
+  --out-dir ~/.local/state/omarchy/steelseries-oled
 ```
 
-`assets/omarchy-oled-128x40.gif` is the looping idle animation. Regenerate it
-from the still wordmark with `python3 make_gif.py` (needs ImageMagick). The
-`.png` is the same still, sized for SteelSeries GG if you ever set a static
-idle screen from Windows.
+`assets/omarchy-oled-128x40.gif` is the looping idle animation, with
+`omarchy-oled-static.frames` and `omarchy-oled-spin.frames` and
+`omarchy-oled-waves.frames` alongside it for the other bundled cycle steps.
+Regenerate all of them from the still wordmark with `python3 make_gif.py`
+(needs ImageMagick). The `.png` is the same still, sized for SteelSeries GG
+if you ever set a static idle screen from Windows.
 
 Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
-`invert.frag`, `apply.py`, `udev/71-steelseries-apex-oled.rules`.
+`invert.frag`, `apply.py`, `make_gif.py`, `udev/71-steelseries-apex-oled.rules`.
 
 ## How it works
 
@@ -111,6 +129,13 @@ years. JSON status lines drive the bar widget.
 
 The idle image lives in keyboard RAM. Firmware restores its own logo after a
 power cycle unless this service is running.
+
+Typed text goes through the same pipeline as a custom image: ImageMagick
+rasterizes it in the chosen font, thresholds it to 1-bit at 128×40, and
+`make_gif.py` turns that bitmap into an animation using the same per-letter
+segmentation and spin/wave math it uses for the bundled wordmark — just
+parameterized over however many letters were actually typed instead of a
+fixed "OMARCHY".
 
 ## Marketplace
 
@@ -123,6 +148,15 @@ MIT. See [LICENSE](LICENSE).
 The wordmark is the official Omarchy mark from `logo.svg` (MIT), rasterized to
 the Apex OLED's 128×40 1-bit panel. Omarchy and SteelSeries names are used to
 describe the hardware and desktop this plugin talks to.
+
+`assets/fonts/OmarchyBlock-Regular.ttf` ("Omarchy Block") is a companion
+display font built for this plugin: it traces the real wordmark's 15-unit
+grid letterforms from `logo.svg` for O/M/A/R/C/H/Y, then extends that same
+chamfered-block, staircase-diagonal construction to the rest of A–Z and
+0–9, so short custom-text lockups can match the logo's style. It's a
+caps-only display face — lowercase maps to the same outlines, and it has no
+extended punctuation — which is why JetBrains Mono stays the default font
+for typed text.
 
 `assets/stickfight.gif` is SteelSeries' own "Stick Fight" OLED gif from their
 [OLED customization blog post](https://steelseries.com/blog/steelseries-oled-gifs-and-customization-137).
