@@ -19,6 +19,11 @@ running. Turning Display off (or `apply.py --release`) blanks the panel.
 
 ## Gallery
 
+The bar panel — Display/Invert, contrast and speed, bundled art and grab-a-gif
+cycling, and the custom-text field with its font and style pickers:
+
+<img src="panel.png" width="420" alt="The SteelSeries OLED panel open in the Omarchy bar, showing Display and Invert toggles, contrast and speed sliders, and the custom-text controls">
+
 <table>
 <tr>
 <td align="center" width="50%">
