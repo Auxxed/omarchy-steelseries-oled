@@ -134,6 +134,11 @@ Panel {
                   playing: true
                   source: previewBox.url
                   opacity: root.on ? 1 : 0.4
+                  layer.enabled: root.ready && root.oled.invert
+                  layer.smooth: false
+                  layer.effect: ShaderEffect {
+                    fragmentShader: Qt.resolvedUrl("invert.frag.qsb")
+                  }
                   onStatusChanged: if (status === AnimatedImage.Ready) playing = true
                 }
               }

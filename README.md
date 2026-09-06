@@ -55,7 +55,7 @@ does not land immediately.
 
 - Left click the bar icon: open the panel
 - **Display** (or right-click the icon): turn the loop on or off. Off blanks the panel.
-- **Invert**: flip black and white
+- **Invert**: flip black and white (the panel preview follows)
 - **Speed**: frame delay
 - **Contrast**: 1-bit threshold for a custom image
 - **Cycle** walks bundled art: typewriter loop → still wordmark → 3D spin
@@ -100,7 +100,7 @@ from the still wordmark with `python3 make_gif.py` (needs ImageMagick). The
 idle screen from Windows.
 
 Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
-`apply.py`, `udev/71-steelseries-apex-oled.rules`.
+`invert.frag`, `apply.py`, `udev/71-steelseries-apex-oled.rules`.
 
 ## How it works
 
