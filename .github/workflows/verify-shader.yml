@@ -39,10 +39,12 @@ jobs:
 
       - name: Compare against the committed binary
         run: |
-          if ! cmp -s invert.frag.qsb /tmp/rebuilt.qsb; then
+          committed=$(sha256sum invert.frag.qsb | cut -d' ' -f1)
+          rebuilt=$(sha256sum /tmp/rebuilt.qsb | cut -d' ' -f1)
+          if [ "$committed" != "$rebuilt" ]; then
             echo "::error::invert.frag.qsb does not match a fresh build of invert.frag" >&2
-            echo "committed: $(sha256sum invert.frag.qsb)"
-            echo "rebuilt:   $(sha256sum /tmp/rebuilt.qsb)"
+            echo "committed: $committed"
+            echo "rebuilt:   $rebuilt"
             exit 1
           fi
-          echo "invert.frag.qsb reproduces byte-for-byte from invert.frag"
+          echo "invert.frag.qsb reproduces byte-for-byte from invert.frag ($committed)"
