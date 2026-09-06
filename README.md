@@ -48,15 +48,24 @@ Same 128×40 legacy OLED protocol:
 
 ## Install
 
+One line clones the plugin, enables it, and grants keyboard access, with no
+interactive prompts:
+
 ```sh
-omarchy plugin add https://github.com/Auxxed/omarchy-steelseries-oled.git --enable
+omarchy plugin add https://github.com/Auxxed/omarchy-steelseries-oled.git --enable --yes && \
+sudo ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/install-udev.sh
 ```
 
-The widget lands on the right of the bar. Move it with:
+The widget lands on the right of the bar by default. Move it with:
 
 ```sh
 omarchy bar move io.github.auxxed.steelseries-oled --section center
 ```
+
+Drop `--yes` if you'd rather review the plugin and pick a bar section
+interactively, and drop the `sudo` line if you'd rather grant keyboard
+access later from the panel (**Allow access**, one polkit prompt) instead
+of the command line — see [Keyboard access](#keyboard-access) below.
 
 Runtime is `python3` (stdlib) for HID. Importing a custom GIF or still needs ImageMagick (`magick`), which Omarchy already ships.
 
