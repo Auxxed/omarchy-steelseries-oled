@@ -17,6 +17,27 @@ The Apex OLED has no onboard animation storage — frames are streamed over
 HID — so the onboard OLED menus will lose the fight while the service is
 running. Turning Display off (or `apply.py --release`) blanks the panel.
 
+## Gallery
+
+<table>
+<tr>
+<td align="center" width="50%">
+
+**Waves** — one step of the bundled wordmark cycle
+
+<img src="assets/omarchy-oled-waves.gif" width="320" alt="Omarchy wordmark rippling across the OLED in the waves style">
+
+</td>
+<td align="center" width="50%">
+
+**Night Runner** — a bundled "grab a gif" pick
+
+<img src="assets/nightrunner.gif" width="320" alt="Night Runner pixel-art animation looping on the OLED">
+
+</td>
+</tr>
+</table>
+
 ## Supported keyboards
 
 Same 128×40 legacy OLED protocol:
