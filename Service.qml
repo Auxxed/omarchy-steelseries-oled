@@ -611,13 +611,25 @@ Item {
     running: false
   }
 
+  // pickProcess and importProcess only ever produce a single short line
+  // (a filesystem path, or apply.py's one-line status JSON, both naturally
+  // bounded by filesystem name limits), but StdioCollector buffers whatever
+  // it is given before any check runs, so a helper misbehaving out of
+  // process still shouldn't get its output trusted or acted on unbounded.
+  readonly property int maxHelperOutput: 8192
+
+  function boundedCollectorText(collector) {
+    var text = collector && collector.text ? String(collector.text) : ""
+    return text.length > maxHelperOutput ? "" : text
+  }
+
   Process {
     id: pickProcess
     running: false
     stdout: StdioCollector { id: pickOut; waitForEnd: true }
     onExited: function(code) {
       root.pickBusy = false
-      var path = pickOut.text ? String(pickOut.text).trim() : ""
+      var path = root.boundedCollectorText(pickOut).trim()
       if (code === 0 && path !== "") root.importImage(path)
     }
   }
@@ -631,13 +643,13 @@ Item {
       root.importBusy = false
       if (code !== 0) {
         root.keepDelayOnImport = false
-        var err = importErr.text ? String(importErr.text).trim() : ""
+        var err = root.boundedCollectorText(importErr).trim()
         root.lastError = (err !== "" ? err : (root.pendingKind === "text" ? "Could not render text" : "Could not import image")).slice(0, 200)
         return
       }
       if (root.pendingKind === "text") {
         var textMsg = null
-        try { textMsg = JSON.parse(String(importOut.text || "").trim()) } catch (e) {}
+        try { textMsg = JSON.parse(root.boundedCollectorText(importOut).trim()) } catch (e) {}
         if (textMsg && textMsg.label !== undefined) root.customText = String(textMsg.label)
         if (textMsg && textMsg.style) root.textStyle = String(textMsg.style)
         if (textMsg && textMsg.font) root.textFont = String(textMsg.font)
@@ -653,7 +665,7 @@ Item {
       var srcFile = root.sourceFile
       var delay = root.delayMs
       try {
-        var msg = JSON.parse(String(importOut.text || "").trim())
+        var msg = JSON.parse(root.boundedCollectorText(importOut).trim())
         if (msg && msg.label && !root.keepDelayOnImport) label = String(msg.label)
         if (msg && msg.source) srcFile = String(msg.source)
         if (msg && msg.delay_ms && !root.keepDelayOnImport)

@@ -142,6 +142,7 @@ Panel {
 
             Text {
               width: parent.width
+              textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
               elide: Text.ElideMiddle
               text: root.ready ? root.oled.sourceLabel : ""
@@ -152,6 +153,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "Contrast  " + (root.ready ? root.oled.threshold : 50) + "%"
             color: Qt.darker(root.foreground, 1.45)
             font.family: root.fontFamily
@@ -174,6 +176,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "Speed  " + (root.ready ? root.oled.delayMs : 100) + " ms"
             color: Qt.darker(root.foreground, 1.45)
             font.family: root.fontFamily
@@ -530,6 +533,7 @@ Panel {
           Text {
             visible: root.ready && root.oled.lastError !== "" && !root.oled.needsUdev && !root.oled.udevBusy
             width: parent.width
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             text: root.ready ? root.oled.lastError : ""
             color: Color.urgent

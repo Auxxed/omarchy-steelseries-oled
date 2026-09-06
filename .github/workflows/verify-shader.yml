@@ -1,0 +1,48 @@
+name: Verify committed shader bundle
+
+# invert.frag.qsb is a compiled Qt Shader Bundle checked into the repo
+# because Quickshell's ShaderEffect loads only the compiled .qsb form, not
+# raw GLSL. A committed binary "cannot be inspected" by reviewers on its
+# own, so this job rebuilds it from the committed invert.frag source in a
+# digest-pinned container and fails if the result is not byte-identical,
+# giving anyone reviewing a tagged commit a reproducible way to verify
+# provenance instead of trusting the binary as shipped.
+on:
+  push:
+    paths:
+      - "invert.frag"
+      - "invert.frag.qsb"
+      - ".github/workflows/verify-shader.yml"
+  pull_request:
+    paths:
+      - "invert.frag"
+      - "invert.frag.qsb"
+      - ".github/workflows/verify-shader.yml"
+  workflow_dispatch: {}
+
+jobs:
+  rebuild-and-diff:
+    runs-on: ubuntu-latest
+    # Pinned by digest, not the floating "latest" tag.
+    container:
+      image: archlinux@sha256:82b1b08faae9d61e3e7e13d562f4d09114d939105b0d59ff34140f3bd418593a
+    steps:
+      - name: Install qt6-shadertools
+        run: |
+          pacman -Sy --noconfirm qt6-shadertools
+
+      - uses: actions/checkout@v4
+
+      - name: Rebuild invert.frag.qsb from source
+        run: |
+          /usr/lib/qt6/bin/qsb --qt6 -o /tmp/rebuilt.qsb invert.frag
+
+      - name: Compare against the committed binary
+        run: |
+          if ! cmp -s invert.frag.qsb /tmp/rebuilt.qsb; then
+            echo "::error::invert.frag.qsb does not match a fresh build of invert.frag" >&2
+            echo "committed: $(sha256sum invert.frag.qsb)"
+            echo "rebuilt:   $(sha256sum /tmp/rebuilt.qsb)"
+            exit 1
+          fi
+          echo "invert.frag.qsb reproduces byte-for-byte from invert.frag"

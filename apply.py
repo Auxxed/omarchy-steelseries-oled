@@ -9,6 +9,7 @@ import glob
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -126,6 +127,20 @@ def clamp_int(value: object, lo: int, hi: int, default: int) -> int:
     return max(lo, min(hi, number))
 
 
+def ensure_private_dir(path: str) -> None:
+    """Create/verify a plugin-owned 0700 state directory, refusing (not
+    repairing) anything already there that is not a real directory we own —
+    a symlink planted at this predictable path must not be followed."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise SystemExit(f"refusing to use non-directory at {path}")
+    if st.st_uid != os.geteuid():
+        raise SystemExit(f"refusing to use directory not owned by this user: {path}")
+    if st.st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
 def load_frames(
     invert: bool,
     path: str | None = None,
@@ -233,12 +248,22 @@ def render_text_bitmap(text: str, font: str) -> bytes:
     if not os.path.isfile(font_path):
         raise SystemExit("text font not found")
     with tempfile.TemporaryDirectory() as tmp:
+        # ImageMagick's label:/caption: coders treat a value starting with "@"
+        # as "read the label from this file" rather than as literal text, so
+        # typed text is written to a file we control and referenced by path
+        # instead of being interpolated into the label: argument directly —
+        # otherwise typing e.g. "@/etc/hostname" would rasterize that file's
+        # contents instead of the literal string.
+        text_path = os.path.join(tmp, "label.txt")
+        with open(text_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        label_arg = f"label:@{text_path}"
         probe = os.path.join(tmp, "probe.png")
         best = 8
         for size in range(40, 5, -1):
             subprocess.check_call(
                 [magick, "-background", "black", "-fill", "white",
-                 "-font", font_path, "-pointsize", str(size), f"label:{text}", probe],
+                 "-font", font_path, "-pointsize", str(size), label_arg, probe],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             w = int(subprocess.check_output([magick, "identify", "-format", "%w", probe]))
@@ -254,7 +279,7 @@ def render_text_bitmap(text: str, font: str) -> bytes:
                 "-fill", "white",
                 "-font", font_path,
                 "-pointsize", str(best),
-                f"label:{text}",
+                label_arg,
                 "-gravity", "center",
                 "-background", "black",
                 "-extent", f"{OLED_W}x{OLED_H}",
@@ -301,7 +326,7 @@ def render_text(
         frames = make_gif.build_frames(pix, letters, cursor_rows)
         delay_ms = 100
 
-    os.makedirs(out_dir, exist_ok=True)
+    ensure_private_dir(out_dir)
     frames_path = os.path.join(out_dir, "text.frames")
     rest_path = os.path.join(out_dir, "text.bin")
     preview_png, preview_gif = preview_paths(out_dir, "text-preview", preview_suffix)
@@ -340,7 +365,7 @@ def import_image(
     if os.path.getsize(src) > MAX_IMPORT_BYTES:
         raise SystemExit("file too large")
     threshold = clamp_int(threshold, 5, 95, 50)
-    os.makedirs(out_dir, exist_ok=True)
+    ensure_private_dir(out_dir)
     ext = os.path.splitext(src)[1].lower()
     if ext not in {".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
         ext = ".img"

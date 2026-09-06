@@ -36,7 +36,12 @@ Please validate repository HEAD after push.
 Headless service + bar widget (`io.github.auxxed.steelseries-oled`) for
 SteelSeries Apex OLED keyboards (Apex 7 / Pro / 5, 128×40, USB `1038:1610|1612|1614|1618|161c`).
 
-- HID runtime is `python3` from the Omarchy install (stdlib only). No network.
+- HID runtime is `python3` from the Omarchy install (stdlib only) and never
+  touches the network. The bar panel's "grab a gif" button is the one
+  network path in the plugin: an on-demand HTTPS GET to a two-name host
+  allowlist (`nlog.us`/`www.nlog.us`), triggered only by that click, capped
+  at 40 MiB and 15s. Everything else — the bundled wordmark cycle, custom
+  image import, typed text — is local.
 - Bundled art: Omarchy typewriter, still wordmark, 3D spin. Custom GIF/still
   import uses ImageMagick (`magick`), already on Omarchy.
 - Display off blanks the OLED instead of leaving the last frame.

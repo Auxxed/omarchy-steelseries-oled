@@ -1,0 +1,38 @@
+name: Verify embedded udev rule matches checked-in file
+
+# install-udev.sh embeds the udev rule bytes directly (see the comment at
+# the top of that script for why: reading udev/71-steelseries-apex-oled.rules
+# from the checkout at install time, as root, would be a TOCTOU window).
+# This job keeps the embedded copy and the checked-in file from silently
+# drifting apart.
+on:
+  push:
+    paths:
+      - "install-udev.sh"
+      - "udev/71-steelseries-apex-oled.rules"
+      - ".github/workflows/verify-udev-rule.yml"
+  pull_request:
+    paths:
+      - "install-udev.sh"
+      - "udev/71-steelseries-apex-oled.rules"
+      - ".github/workflows/verify-udev-rule.yml"
+  workflow_dispatch: {}
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract the heredoc body from install-udev.sh
+        run: |
+          awk '/^cat >"\$TMP" <<.RULE.$/{flag=1; next} /^RULE$/{flag=0} flag' install-udev.sh > /tmp/embedded.rules
+
+      - name: Compare against udev/71-steelseries-apex-oled.rules
+        run: |
+          if ! cmp -s /tmp/embedded.rules udev/71-steelseries-apex-oled.rules; then
+            echo "::error::install-udev.sh's embedded rule no longer matches udev/71-steelseries-apex-oled.rules" >&2
+            diff -u udev/71-steelseries-apex-oled.rules /tmp/embedded.rules || true
+            exit 1
+          fi
+          echo "embedded rule matches udev/71-steelseries-apex-oled.rules"
