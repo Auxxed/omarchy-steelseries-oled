@@ -215,6 +215,18 @@ def gif_delay_ms(src: str) -> int:
     return max(50, min(500, ticks[0] * 10))
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # The host/scheme allowlist below only re-runs on the URL we built; a
+    # redirect response would hand urlopen's default handler a new URL that
+    # never sees that check, which is exactly how an allowlisted host could
+    # point the fetch at an internal address. Refuse every redirect instead.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def fetch_url_to_tmp(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in IMPORT_URL_HOSTS:
@@ -223,7 +235,7 @@ def fetch_url_to_tmp(url: str) -> str:
     if ext not in {".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
         ext = ".gif"
     req = urllib.request.Request(url, headers={"User-Agent": "omarchy-steelseries-oled"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _NO_REDIRECT_OPENER.open(req, timeout=15) as resp:
         data = resp.read(MAX_IMPORT_BYTES + 1)
     if len(data) > MAX_IMPORT_BYTES:
         raise SystemExit("file too large")
