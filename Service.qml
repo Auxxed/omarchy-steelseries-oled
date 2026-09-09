@@ -64,7 +64,7 @@ Item {
     { file: "WnHOHQG.gif", name: 'Blink Dots' },
     { file: "eoimUey.gif", name: 'Boom' },
     { file: "9Mf0FTR.gif", name: 'Castle Sparkle' },
-    { file: "dIjeOFq.gif", name: 'Cat Mask' },
+    { file: "dIjeOFq.gif", name: 'Bongo Cat' },
     { file: "c0BnYJc.gif", name: 'Cat Walk' },
     { file: "8Vhseur.gif", name: 'Cheshire Grin' },
     { file: "87SFGzU.gif", name: 'Crescent Moon' },
