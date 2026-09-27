@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls as QQC
 import qs.Commons
 import qs.Ui
 
@@ -14,9 +13,32 @@ Panel {
   readonly property var oled: hostWidget && hostWidget.oled ? hostWidget.oled : null
   readonly property bool ready: !!oled
   readonly property bool on: ready && oled.enabled
+  readonly property bool live: ready && oled.looping
   readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color dim: Qt.darker(foreground, 1.45)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool canOpen: bar !== null && anchorItem !== null
+  readonly property bool busy: ready && (oled.importBusy || oled.pickBusy)
+
+  // Which source tab is showing. Follows whatever is playing each time the
+  // panel opens; switching tabs on its own never changes the OLED.
+  property string tab: "logo"
+  readonly property var tabs: [
+    { value: "logo", label: "Logo" },
+    { value: "effects", label: "Effects" },
+    { value: "images", label: "Images" },
+    { value: "text", label: "Text" }
+  ]
+
+  function tabForPreset() {
+    if (!ready) return "logo"
+    if (oled.isScreensaver) return "effects"
+    if (oled.isCustom) return "images"
+    if (oled.isText) return "text"
+    return "logo"
+  }
+
+  onOpenedChanged: if (opened) tab = tabForPreset()
 
   function open() {
     if (!canOpen) return
@@ -40,8 +62,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(440))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(780))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -52,6 +74,7 @@ Panel {
       onTextKey: function(t) {
         if (t === " " && root.ready) root.oled.toggleEnabled()
         else if ((t === "i" || t === "I") && root.ready) root.oled.toggleInvert()
+        else if ((t === "r" || t === "R") && root.ready) root.oled.surpriseMe(root.tab)
         else if ((t === "u" || t === "U") && root.ready && root.oled.needsUdev)
           root.oled.installUdev()
       }
@@ -69,11 +92,12 @@ Panel {
         Column {
           id: content
           width: panelFlick.width
-          spacing: Style.space(10)
+          spacing: Style.space(12)
 
+          // ── Header ────────────────────────────────────────────────
           PanelHero {
             width: parent.width
-            title: "OLED"
+            title: "SteelSeries OLED"
             meta: root.ready ? root.oled.statusLabel : "…"
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -81,452 +105,690 @@ Panel {
             iconComponent: Component {
               Text {
                 textFormat: Text.PlainText
-                text: "\uF11C"
+                text: ""
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
               }
             }
+            trailingControl: Component {
+              ToggleSwitch {
+                checked: root.on
+                foreground: root.foreground
+                onToggled: if (root.ready) root.oled.toggleEnabled()
+              }
+            }
           }
 
-          Toggle {
+          // ── The stage: a pixel-exact stand-in for the keyboard OLED ──
+          Item {
+            id: stage
             width: parent.width
-            label: "Display"
-            checked: root.on
+            height: bezel.height + Style.space(6)
+
+            // Largest whole-number scale that fits, so every OLED pixel
+            // lands on a crisp block and the dot grid lines up.
+            readonly property int px: Math.max(1, Math.floor((width - Style.space(24)) / 128))
+
+            Rectangle {
+              id: glow
+              anchors.fill: bezel
+              anchors.margins: -Style.space(3)
+              radius: bezel.radius + Style.space(3)
+              color: "transparent"
+              border.width: Style.space(2)
+              border.color: Color.accent
+              opacity: 0
+              visible: root.live
+
+              SequentialAnimation on opacity {
+                running: root.live && root.opened
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.08; to: 0.45; duration: 1600; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 0.45; to: 0.08; duration: 1600; easing.type: Easing.InOutSine }
+              }
+            }
+
+            Rectangle {
+              id: bezel
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.bottom: parent.bottom
+              width: screen.width + Style.space(20)
+              height: screen.height + Style.space(20)
+              radius: Math.max(Style.cornerRadius, Style.space(6))
+              color: "#050505"
+              border.width: 1
+              border.color: Util.alpha(root.foreground, 0.18)
+
+              Item {
+                id: screen
+                anchors.centerIn: parent
+                width: 128 * stage.px
+                height: 40 * stage.px
+                clip: true
+
+                AnimatedImage {
+                  anchors.fill: parent
+                  fillMode: Image.Stretch
+                  asynchronous: false
+                  cache: true
+                  smooth: false
+                  playing: true
+                  // Every custom/text render writes a uniquely-numbered preview
+                  // file (apply.py's preview_paths()) instead of overwriting one
+                  // fixed name, so this URL is only ever equal to a previous one
+                  // when the content is actually the same — no cache-busting
+                  // trick needed, and no stale frame to worry about.
+                  source: root.ready ? root.oled.previewUrl : ""
+                  opacity: root.on ? 1 : 0.25
+                  layer.enabled: root.ready && root.oled.invert
+                  layer.smooth: false
+                  layer.effect: ShaderEffect {
+                    fragmentShader: Qt.resolvedUrl("invert.frag.qsb")
+                  }
+                  onStatusChanged: if (status === AnimatedImage.Ready) playing = true
+
+                  Behavior on opacity { NumberAnimation { duration: 220 } }
+                }
+
+                // Dot-matrix grid: a hairline between every OLED pixel.
+                Canvas {
+                  anchors.fill: parent
+                  visible: stage.px >= 3
+                  onWidthChanged: requestPaint()
+                  onHeightChanged: requestPaint()
+                  onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.fillStyle = "rgba(0, 0, 0, 0.45)"
+                    for (var x = stage.px; x < width; x += stage.px) ctx.fillRect(x - 1, 0, 1, height)
+                    for (var y = stage.px; y < height; y += stage.px) ctx.fillRect(0, y - 1, width, 1)
+                  }
+                }
+
+                Text {
+                  anchors.centerIn: parent
+                  visible: root.ready && !root.on
+                  textFormat: Text.PlainText
+                  text: "DISPLAY OFF"
+                  color: Util.alpha("#ffffff", 0.55)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.letterSpacing: 3
+                  font.bold: true
+                }
+              }
+
+              // Status pill riding the bezel's top edge, clear of the pixels.
+              Rectangle {
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.top
+                height: pillRow.implicitHeight + Style.space(4)
+                width: pillRow.implicitWidth + Style.space(10)
+                radius: height / 2
+                color: "#050505"
+                border.width: 1
+                border.color: Util.alpha(root.foreground, 0.18)
+                visible: root.ready
+
+                Row {
+                  id: pillRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
+
+                  Rectangle {
+                    id: liveDot
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: width
+                    radius: width / 2
+                    color: root.live ? Color.accent : (root.ready && root.oled.needsUdev ? Color.urgent : Util.alpha("#ffffff", 0.35))
+
+                    SequentialAnimation on opacity {
+                      running: root.live && root.opened
+                      loops: Animation.Infinite
+                      onRunningChanged: if (!running) liveDot.opacity = 1
+                      NumberAnimation { to: 0.25; duration: 700 }
+                      NumberAnimation { to: 1; duration: 700 }
+                    }
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: root.live
+                      ? (root.oled.idleSyncActive ? "IDLE" : "LIVE")
+                      : (root.ready ? root.oled.statusLabel.toUpperCase() : "")
+                    color: Util.alpha("#ffffff", 0.8)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.letterSpacing: 1.5
+                    font.bold: true
+                  }
+                }
+              }
+            }
+          }
+
+          // ── Now playing + dice ────────────────────────────────────
+          Item {
+            width: parent.width
+            height: Math.max(nowPlaying.implicitHeight, diceButton.height)
+
+            Column {
+              id: nowPlaying
+              anchors.left: parent.left
+              anchors.right: invertButton.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(1)
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.ready && root.oled.idleSyncActive ? "FOLLOWING SCREENSAVER" : "NOW PLAYING"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.5
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                text: root.ready
+                  ? (root.oled.idleSyncActive ? "All effects, shuffled" : root.oled.sourceLabel)
+                  : ""
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.heading
+                font.bold: true
+              }
+            }
+
+            Button {
+              id: invertButton
+              anchors.right: diceButton.left
+              anchors.rightMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: ""
+              tooltipText: root.ready && root.oled.invert ? "Inverted — click to restore (I)" : "Invert black and white (I)"
+              selected: root.ready && root.oled.invert
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: if (root.ready) root.oled.toggleInvert()
+            }
+
+            Button {
+              id: diceButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: ""
+              text: "Surprise me"
+              bordered: true
+              tooltipText: ({
+                logo: "Random logo style (R)",
+                effects: "Random screensaver effect (R)",
+                images: "Random GIF from the library (R)",
+                text: "Random style for your text (R)"
+              })[root.tab] || "Surprise me (R)"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              iconRotation: 0
+              onClicked: {
+                if (!root.ready) return
+                root.oled.surpriseMe(root.tab)
+                spin.restart()
+              }
+
+              RotationAnimation on iconRotation {
+                id: spin
+                running: false
+                from: 0
+                to: 360
+                duration: 450
+                easing.type: Easing.OutBack
+              }
+            }
+          }
+
+          // ── Source tabs ───────────────────────────────────────────
+          ButtonGroup {
+            width: parent.width
+            options: root.tabs
+            value: root.tab
             foreground: root.foreground
             fontFamily: root.fontFamily
-            onClicked: if (root.ready) root.oled.toggleEnabled()
+            onChanged: function(v) { root.tab = v }
           }
 
-          Toggle {
-            width: parent.width
-            label: "Invert"
-            checked: root.ready && root.oled.invert
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: if (root.ready) root.oled.toggleInvert()
-          }
-
+          // Logo: the bundled wordmark cycle.
           Column {
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(8)
+            visible: root.tab === "logo"
 
-            Item {
-              id: previewBox
+            Flow {
               width: parent.width
-              height: 40
-              property string url: root.ready ? root.oled.previewUrl : ""
+              spacing: Style.space(6)
 
-              AnimatedImage {
-                anchors.fill: parent
-                fillMode: Image.PreserveAspectFit
-                asynchronous: false
-                cache: true
-                smooth: false
-                playing: true
-                // Every custom/text render writes a uniquely-numbered preview
-                // file (apply.py's preview_paths()) instead of overwriting one
-                // fixed name, so this URL is only ever equal to a previous one
-                // when the content is actually the same — no cache-busting
-                // trick needed, and no stale frame to worry about.
-                source: previewBox.url
-                opacity: root.on ? 1 : 0.4
-                layer.enabled: root.ready && root.oled.invert
-                layer.smooth: false
-                layer.effect: ShaderEffect {
-                  fragmentShader: Qt.resolvedUrl("invert.frag.qsb")
+              Repeater {
+                model: root.ready ? root.oled.bundledOrder : []
+                delegate: Button {
+                  required property var modelData
+                  text: root.oled.bundledLabels[modelData] || modelData
+                  selected: root.ready && root.oled.preset === modelData
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: if (root.ready) root.oled.setPreset(modelData)
                 }
-                onStatusChanged: if (status === AnimatedImage.Ready) playing = true
               }
             }
 
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              horizontalAlignment: Text.AlignHCenter
-              elide: Text.ElideMiddle
-              text: root.ready ? root.oled.sourceLabel : ""
-              color: root.foreground
+              wrapMode: Text.WordWrap
+              text: "The official wordmark: typed out, still, spun in 3D, or riding a wave. Screensaver (all) plays every effect shuffled."
+              color: root.dim
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
-            text: "Contrast  " + (root.ready ? root.oled.threshold : 50) + "%"
-            color: Qt.darker(root.foreground, 1.45)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.letterSpacing: 1.2
-            opacity: root.ready && root.oled.isCustom ? 1 : 0.4
-          }
-
-          PanelSlider {
+          // Effects: every ttfx screensaver effect as a chip.
+          Column {
             width: parent.width
-            bar: root.bar
-            enabled: root.ready && root.oled.isCustom
-            opacity: enabled ? 1 : 0.4
-            value: root.ready ? root.oled.threshold : 50
-            minimum: 10
-            maximum: 90
-            step: 5
-            integer: true
-            onReleased: function(v) { if (root.ready && root.oled.isCustom) root.oled.setThreshold(v) }
-          }
+            spacing: Style.space(8)
+            visible: root.tab === "effects"
 
-          Text {
-            textFormat: Text.PlainText
-            text: "Speed  " + (root.ready ? root.oled.delayMs : 100) + " ms"
-            color: Qt.darker(root.foreground, 1.45)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.letterSpacing: 1.2
-          }
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
 
-          PanelSlider {
-            width: parent.width
-            bar: root.bar
-            value: root.ready ? root.oled.delayMs : 100
-            minimum: 50
-            maximum: 400
-            step: 10
-            integer: true
-            onReleased: function(v) { if (root.ready) root.oled.setDelayMs(v) }
-          }
-
-          Button {
-            width: parent.width
-            text: root.ready && (root.oled.pickBusy || root.oled.importBusy)
-              ? "Importing…"
-              : "Choose image"
-            foreground: root.foreground
-            onClicked: {
-              if (!root.ready || root.oled.pickBusy || root.oled.importBusy) return
-              root.close()
-              root.oled.pickImage()
-            }
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Button {
-              width: parent.width - webGifButton.width - parent.spacing
-              text: "Omarchy Logo"
-              foreground: root.foreground
-              onClicked: if (root.ready) root.oled.cycleBundled()
-            }
-
-            Button {
-              id: webGifButton
-              text: root.ready && root.oled.importBusy
-                ? "…"
-                : (root.ready && root.oled.webGifIndex >= 0 ? String(root.oled.webGifIndex + 1) : "#")
-              tooltipText: root.ready && root.oled.webGifIndex >= 0
-                ? "#" + (root.oled.webGifIndex + 1) + " " + root.oled.webGifs[root.oled.webGifIndex].name + " (nlog.us) — click for next, right-click for all"
-                : "Grab the next OLED gif from nlog.us (right-click for all)"
-              foreground: root.foreground
-              opacity: (root.ready && !root.oled.importBusy && !root.oled.pickBusy) ? 1 : 0.4
-              onClicked: if (root.ready) root.oled.fetchWebGif()
-              onRightClicked: if (root.ready) webGifMenu.opened ? webGifMenu.close() : webGifMenu.open()
-
-              function gifOptions(query) {
-                var out = []
-                if (!root.ready) return out
-                var q = query.toLowerCase()
-                var all = root.oled.webGifs
-                for (var i = 0; i < all.length; i++) {
-                  if (q === "" || all[i].name.toLowerCase().indexOf(q) !== -1)
-                    out.push({ idx: i, name: all[i].name })
-                }
-                return out
+              TextField {
+                id: effectFilter
+                width: parent.width - shuffleAllButton.width - parent.spacing
+                placeholderText: "Search 37 effects…"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                Keys.onEscapePressed: text = ""
               }
 
-              QQC.Popup {
-                id: webGifMenu
-                x: webGifButton.width - width
-                y: webGifButton.height + Style.space(4)
-                width: Style.space(200)
-                height: Style.space(260)
-                padding: Style.spacing.hairline
-                focus: true
+              Button {
+                id: shuffleAllButton
+                iconText: ""
+                text: "All"
+                tooltipText: "Every effect, shuffled — like the real screensaver"
+                selected: root.ready && root.oled.preset === "screensaver"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready) root.oled.setPreset("screensaver")
+              }
+            }
 
-                background: BorderSurface {
-                  color: Color.popups.background
-                  borderSpec: Border.localOrSurfaceSpec("popups", "border", Color.popups.border, Color.popups.border, Style.normalBorderWidth)
-                  radius: Style.cornerRadius
-                }
+            Flickable {
+              id: effectScroll
+              width: parent.width
+              height: Math.min(effectFlow.implicitHeight, Style.space(200))
+              contentWidth: width
+              contentHeight: effectFlow.implicitHeight
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              interactive: contentHeight > height
 
-                onOpened: {
-                  gifFilter.text = ""
-                  Qt.callLater(function() { gifFilter.forceActiveFocus() })
-                }
+              Flow {
+                id: effectFlow
+                width: effectScroll.width
+                spacing: Style.space(5)
 
-                contentItem: Column {
-                  spacing: Style.spacing.xxs
-
-                  TextField {
-                    id: gifFilter
-                    width: parent.width
-                    placeholderText: "Search…"
+                Repeater {
+                  model: {
+                    if (!root.ready) return []
+                    var q = effectFilter.text.trim().toLowerCase()
+                    var all = root.oled.screensaverEffects
+                    var out = []
+                    for (var i = 0; i < all.length; i++) {
+                      if (q === "" || root.oled.effectLabel(all[i]).toLowerCase().indexOf(q) !== -1)
+                        out.push(all[i])
+                    }
+                    return out
+                  }
+                  delegate: Button {
+                    required property var modelData
+                    text: root.oled.effectLabel(modelData)
+                    selected: root.ready && root.oled.preset === "screensaver:" + modelData
+                    bordered: true
+                    fontSize: Style.font.bodySmall
+                    horizontalPadding: Style.space(8)
                     foreground: root.foreground
-                    font.family: root.fontFamily
-                    Keys.onEscapePressed: webGifMenu.close()
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    visible: gifList.count === 0
-                    text: "No matches"
-                    color: Qt.darker(root.foreground, 1.6)
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  ListView {
-                    id: gifList
-                    width: parent.width
-                    height: webGifMenu.height - gifFilter.height - Style.spacing.xxs - webGifMenu.topPadding - webGifMenu.bottomPadding
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    model: webGifButton.gifOptions(gifFilter.text)
-
-                    delegate: Rectangle {
-                      required property var modelData
-                      width: gifList.width
-                      height: Style.space(26)
-                      color: rowHover.hovered ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: Style.spacing.controlPaddingX
-                        anchors.rightMargin: Style.spacing.controlPaddingX
-                        text: "#" + (modelData.idx + 1) + "  " + modelData.name
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                        elide: Text.ElideRight
-                      }
-
-                      HoverHandler { id: rowHover }
-                      MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.oled.jumpToWebGif(modelData.idx)
-                          webGifMenu.close()
-                        }
-                      }
-                    }
+                    fontFamily: root.fontFamily
+                    onClicked: if (root.ready) root.oled.setPreset("screensaver:" + modelData)
                   }
                 }
               }
             }
+
+            Text {
+              visible: effectFlow.children.length <= 1
+              textFormat: Text.PlainText
+              text: "No effect matches “" + effectFilter.text + "”"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
           }
 
+          // Images: bundled/online gifs plus your own imports.
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.tab === "images"
+
+            PanelSectionHeader {
+              text: "GIF LIBRARY"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: gifFilter
+                width: parent.width - nextGifButton.width - parent.spacing
+                placeholderText: "Search " + (root.ready ? root.oled.webGifs.length : "") + " GIFs…"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                Keys.onEscapePressed: text = ""
+              }
+
+              Button {
+                id: nextGifButton
+                iconText: ""
+                text: "Next"
+                tooltipText: "Step to the next GIF in the library"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                opacity: root.busy ? 0.5 : 1
+                onClicked: if (root.ready && !root.busy) root.oled.fetchWebGif()
+              }
+            }
+
+            Flickable {
+              id: gifScroll
+              width: parent.width
+              height: Math.min(gifFlow.implicitHeight, Style.space(200))
+              contentWidth: width
+              contentHeight: gifFlow.implicitHeight
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              interactive: contentHeight > height
+
+              Flow {
+                id: gifFlow
+                width: gifScroll.width
+                spacing: Style.space(5)
+
+                Repeater {
+                  model: {
+                    if (!root.ready) return []
+                    var q = gifFilter.text.trim().toLowerCase()
+                    var all = root.oled.webGifs
+                    var out = []
+                    for (var i = 0; i < all.length; i++) {
+                      if (q === "" || all[i].name.toLowerCase().indexOf(q) !== -1)
+                        out.push({ idx: i, name: all[i].name, bundled: !!all[i].path })
+                    }
+                    return out
+                  }
+                  delegate: Button {
+                    required property var modelData
+                    text: modelData.name
+                    iconText: modelData.bundled ? "" : ""
+                    tooltipText: modelData.bundled ? "Ships with the plugin" : "Fetched from nlog.us"
+                    selected: root.ready && root.oled.isCustom && root.oled.webGifIndex === modelData.idx
+                    bordered: true
+                    fontSize: Style.font.bodySmall
+                    horizontalPadding: Style.space(8)
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    opacity: root.busy ? 0.5 : 1
+                    onClicked: if (root.ready && !root.busy) root.oled.jumpToWebGif(modelData.idx)
+                  }
+                }
+              }
+            }
+
+            Text {
+              visible: gifFlow.children.length <= 1
+              textFormat: Text.PlainText
+              text: "No GIF matches “" + gifFilter.text + "”"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            PanelSectionHeader {
+              text: "YOUR OWN"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Button {
+                width: root.ready && root.oled.hasCustom ? (parent.width - parent.spacing) / 2 : parent.width
+                iconText: ""
+                text: root.busy ? "Importing…" : "Choose image"
+                tooltipText: "GIF, PNG, JPG, WebP or BMP — resized to 128×40, 1-bit"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  if (!root.ready || root.busy) return
+                  root.close()
+                  root.oled.pickImage()
+                }
+              }
+
+              Button {
+                visible: root.ready && root.oled.hasCustom
+                width: (parent.width - parent.spacing) / 2
+                iconText: ""
+                text: "Last image"
+                selected: root.ready && root.oled.isCustom
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready && !root.oled.isCustom) root.oled.useCustom()
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+              visible: root.ready && root.oled.isCustom
+
+              Item {
+                width: parent.width
+                height: contrastLabel.implicitHeight
+
+                Text {
+                  id: contrastLabel
+                  textFormat: Text.PlainText
+                  text: "Contrast"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                  anchors.right: parent.right
+                  textFormat: Text.PlainText
+                  text: (root.ready ? root.oled.threshold : 50) + "%"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                }
+              }
+
+              PanelSlider {
+                width: parent.width
+                bar: root.bar
+                value: root.ready ? root.oled.threshold : 50
+                minimum: 10
+                maximum: 90
+                step: 5
+                integer: true
+                onReleased: function(v) { if (root.ready && root.oled.isCustom) root.oled.setThreshold(v) }
+              }
+            }
+          }
+
+          // Text: type anything, pick a font and style.
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.tab === "text"
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: textInput
+                width: parent.width - renderButton.width - parent.spacing
+                placeholderText: "Type in Omarchy Block…"
+                text: root.ready ? root.oled.customText : ""
+                foreground: root.foreground
+                font.family: root.fontFamily
+                onAccepted: if (root.ready && text.trim() !== "") root.oled.setCustomText(text.trim())
+              }
+
+              Button {
+                id: renderButton
+                iconText: root.busy ? "" : ""
+                text: root.busy ? "…" : (root.ready && root.oled.isText && textInput.text.trim() === root.oled.customText ? "Showing" : "Show")
+                selected: root.ready && root.oled.isText && textInput.text.trim() === root.oled.customText
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  if (!root.ready || root.busy) return
+                  var typed = textInput.text.trim()
+                  if (typed === "") return
+                  if (!root.oled.hasText || typed !== root.oled.customText) root.oled.setCustomText(typed)
+                  else root.oled.useText()
+                }
+              }
+            }
+
+            PanelSectionHeader {
+              text: "STYLE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            ButtonGroup {
+              enabled: root.ready && root.oled.hasText && !root.busy
+              opacity: enabled ? 1 : 0.4
+              options: root.ready
+                ? root.oled.textStyleOrder.map(function(s) { return { value: s, label: s.charAt(0).toUpperCase() + s.slice(1) } })
+                : []
+              value: root.ready ? root.oled.textStyle : ""
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { if (root.ready) root.oled.setTextStyle(v) }
+            }
+          }
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.foreground
+          }
+
+          // ── Tuning ────────────────────────────────────────────────
           Row {
             width: parent.width
             spacing: Style.space(6)
 
-            TextField {
-              id: textInput
-              width: parent.width - textFontButton.width - textStyleButton.width - parent.spacing * 2
-              placeholderText: "Type your own…"
-              text: root.ready ? root.oled.customText : ""
-              onAccepted: if (root.ready && text.trim() !== "") root.oled.setCustomText(text)
-            }
-
             Button {
-              id: textFontButton
-              text: {
-                if (root.ready && root.oled.importBusy) return "…"
-                if (!root.ready || !root.oled.hasText) return "Font"
-                return root.oled.textFontLabels[root.oled.textFont] || root.oled.textFont
-              }
-              tooltipText: root.ready && root.oled.hasText
-                ? "Font: " + (root.oled.textFontLabels[root.oled.textFont] || root.oled.textFont) + " — click to cycle, right-click to pick"
-                : "Font used to render typed text"
+              width: parent.width
+              iconText: ""
+              text: "Follow screensaver"
+              tooltipText: "Play the screensaver effects while Omarchy's screensaver is up"
+              selected: root.ready && root.oled.idleSync
+              bordered: true
               foreground: root.foreground
-              opacity: (root.ready && !root.oled.importBusy && !root.oled.pickBusy) ? 1 : 0.4
-              onClicked: {
-                if (!root.ready || !root.oled.hasText) return
-                root.oled.cycleTextFont()
-              }
-              onRightClicked: {
-                if (!root.ready || !root.oled.hasText) return
-                textFontMenu.opened ? textFontMenu.close() : textFontMenu.open()
-              }
-
-              QQC.Popup {
-                id: textFontMenu
-                x: textFontButton.width - width
-                y: textFontButton.height + Style.space(4)
-                width: Style.space(140)
-                height: fontList.implicitHeight + topPadding + bottomPadding
-                padding: Style.spacing.hairline
-                focus: true
-
-                background: BorderSurface {
-                  color: Color.popups.background
-                  borderSpec: Border.localOrSurfaceSpec("popups", "border", Color.popups.border, Color.popups.border, Style.normalBorderWidth)
-                  radius: Style.cornerRadius
-                }
-
-                contentItem: Column {
-                  id: fontList
-                  spacing: 0
-
-                  Repeater {
-                    model: root.ready ? root.oled.textFontOrder : []
-                    delegate: Rectangle {
-                      required property var modelData
-                      width: fontList.width
-                      height: Style.space(26)
-                      color: fontHover.hovered ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: Style.spacing.controlPaddingX
-                        anchors.rightMargin: Style.spacing.controlPaddingX
-                        text: root.oled.textFontLabels[modelData] || modelData
-                        font.bold: root.ready && modelData === root.oled.textFont
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                      }
-
-                      HoverHandler { id: fontHover }
-                      MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.oled.setTextFont(modelData)
-                          textFontMenu.close()
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-
-            Button {
-              id: textStyleButton
-              text: {
-                if (root.ready && root.oled.importBusy) return "…"
-                if (!root.ready || !root.oled.hasText) return "Set"
-                var s = root.oled.textStyle
-                return s.charAt(0).toUpperCase() + s.slice(1)
-              }
-              tooltipText: root.ready && root.oled.hasText
-                ? "Style: " + root.oled.textStyle + " — click to cycle, right-click to pick"
-                : "Render the typed text (128x40, 1-bit)"
-              foreground: root.foreground
-              opacity: (root.ready && !root.oled.importBusy && !root.oled.pickBusy) ? 1 : 0.4
-              onClicked: {
-                if (!root.ready) return
-                var typed = textInput.text.trim()
-                if (!root.oled.hasText || typed !== root.oled.customText) {
-                  if (typed !== "") root.oled.setCustomText(typed)
-                } else {
-                  root.oled.cycleTextStyle()
-                }
-              }
-              onRightClicked: {
-                if (!root.ready || !root.oled.hasText) return
-                textStyleMenu.opened ? textStyleMenu.close() : textStyleMenu.open()
-              }
-
-              QQC.Popup {
-                id: textStyleMenu
-                x: textStyleButton.width - width
-                y: textStyleButton.height + Style.space(4)
-                width: Style.space(140)
-                height: styleList.implicitHeight + topPadding + bottomPadding
-                padding: Style.spacing.hairline
-                focus: true
-
-                background: BorderSurface {
-                  color: Color.popups.background
-                  borderSpec: Border.localOrSurfaceSpec("popups", "border", Color.popups.border, Color.popups.border, Style.normalBorderWidth)
-                  radius: Style.cornerRadius
-                }
-
-                contentItem: Column {
-                  id: styleList
-                  spacing: 0
-
-                  Repeater {
-                    model: root.ready ? root.oled.textStyleOrder : []
-                    delegate: Rectangle {
-                      required property var modelData
-                      width: styleList.width
-                      height: Style.space(26)
-                      color: styleHover.hovered ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: Style.spacing.controlPaddingX
-                        anchors.rightMargin: Style.spacing.controlPaddingX
-                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                        font.bold: root.ready && modelData === root.oled.textStyle
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                      }
-
-                      HoverHandler { id: styleHover }
-                      MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.oled.setTextStyle(modelData)
-                          textStyleMenu.close()
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              fontFamily: root.fontFamily
+              onClicked: if (root.ready) root.oled.toggleIdleSync()
             }
           }
 
-          Button {
-            visible: root.ready && root.oled.hasText
-            enabled: root.ready && root.oled.preset !== "text"
-            opacity: enabled ? 1 : 0.4
+          Column {
             width: parent.width
-            text: "Use text"
-            foreground: root.foreground
-            onClicked: if (root.ready && root.oled.preset !== "text") root.oled.useText()
+            spacing: Style.space(4)
+
+            Item {
+              width: parent.width
+              height: speedLabel.implicitHeight
+
+              Text {
+                id: speedLabel
+                textFormat: Text.PlainText
+                text: "Speed"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                anchors.right: parent.right
+                textFormat: Text.PlainText
+                // Lower delay = faster; show it as frames per second too.
+                text: {
+                  var ms = root.ready ? root.oled.delayMs : 100
+                  return ms + " ms · " + Math.round(1000 / ms) + " fps"
+                }
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+              }
+            }
+
+            PanelSlider {
+              width: parent.width
+              bar: root.bar
+              value: root.ready ? root.oled.delayMs : 100
+              minimum: 50
+              maximum: 400
+              step: 10
+              integer: true
+              onReleased: function(v) { if (root.ready) root.oled.setDelayMs(v) }
+            }
           }
 
-          Button {
-            visible: root.ready && root.oled.hasCustom
-            enabled: root.ready && root.oled.preset !== "custom"
-            opacity: enabled ? 1 : 0.4
-            width: parent.width
-            text: "Use last image"
-            foreground: root.foreground
-            onClicked: if (root.ready && root.oled.preset !== "custom") root.oled.useCustom()
-          }
-
+          // ── Access / errors ───────────────────────────────────────
           Button {
             visible: root.ready && root.oled.needsUdev
             width: parent.width
-            text: (root.ready && root.oled.udevBusy) ? "Waiting…" : "Allow access"
+            iconText: ""
+            text: (root.ready && root.oled.udevBusy) ? "Waiting…" : "Allow keyboard access (U)"
+            bordered: true
             foreground: root.foreground
+            fontFamily: root.fontFamily
             onClicked: if (root.ready) root.oled.installUdev()
           }
 

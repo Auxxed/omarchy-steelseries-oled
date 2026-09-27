@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 
 // Headless service: stream the Omarchy GIF to a SteelSeries Apex OLED.
 // apply.py watches hidraw. The bar widget reads status from this singleton.
@@ -18,21 +19,37 @@ Item {
   readonly property bool isStatic: preset === "static"
   readonly property bool isSpin: preset === "spin"
   readonly property bool isWaves: preset === "waves"
+  // "screensaver" plays every effect in a fresh random order (like the real
+  // screensaver); "screensaver:<effect>" loops just that one.
+  readonly property bool isScreensaver: isScreensaverPreset(preset)
   readonly property bool isText: preset === "text"
 
   // Custom typed text, rendered with the same typewriter/static/spin/waves
   // styles as the bundled Omarchy wordmark (see apply.py's render_text()).
   property string customText: ""
   property string textStyle: "typewriter"
-  property string textFont: "jetbrains"
+  property string textFont: "omarchy"
   property int textDelayMs: 100
   property bool hasText: false
   readonly property var textStyleOrder: ["typewriter", "static", "spin", "waves"]
-  readonly property var textFontOrder: ["jetbrains", "omarchy"]
-  readonly property var textFontLabels: ({ "jetbrains": "JetBrains Mono", "omarchy": "Omarchy Block" })
+  readonly property var textFontOrder: ["omarchy"]
+  readonly property var textFontLabels: ({ "omarchy": "Omarchy Block" })
+  // Set when the saved text was rendered in a font that no longer exists
+  // (JetBrains Mono); it gets re-rendered in Omarchy Block before it's shown.
+  property bool textStale: false
   // Which kind of result importProcess is currently producing, so its single
   // onExited handler knows whether to land on the "custom" or "text" preset.
   property string pendingKind: "custom"
+
+  // Idle sync: while Omarchy's screensaver window is up, play the screensaver
+  // loop regardless of preset, then drop back. Tracked from Hyprland's window
+  // events the same way the shell's idle service does.
+  property bool idleSync: true
+  property var screensaverWindows: ({})
+  property int screensaverWindowCount: 0
+  readonly property string screensaverClass: "org.omarchy.screensaver"
+  readonly property bool idleSyncActive: idleSync && screensaverWindowCount > 0
+  onIdleSyncActiveChanged: if (settingsLoaded && enabled) startWatch()
 
   property bool invert: false
   property int threshold: 50
@@ -50,64 +67,64 @@ Item {
   property bool pickBusy: false
   property int webGifIndex: -1
   // Gifs on nlog.us's SteelSeries OLED gif page (../content/steelseries/<file>),
-  // renamed by hand from their imgur hashes and sorted for a sane cycle order.
+  // named by what they actually show and sorted alphabetically for the cycle.
   // Delete any entry here to drop it from the "grab a gif" cycle. Entries with
   // `path` instead of `file` are imported straight from a bundled asset file
   // (ships with the plugin) rather than fetched from nlog.us.
   readonly property var webGifs: [
     { path: pluginDir + "/assets/stickfight.gif", name: 'Stick Fight' },
     { path: pluginDir + "/assets/nightrunner.gif", name: 'Night Runner' },
-    { file: "vaNQK2n.gif", name: 'Arch Stripes' },
-    { file: "2TP0MFR.gif", name: 'Bad' },
-    { file: "t8IJvJi.gif", name: 'Be Free' },
-    { file: "3pdYDmI.gif", name: 'Blank Fade' },
-    { file: "WnHOHQG.gif", name: 'Blink Dots' },
-    { file: "eoimUey.gif", name: 'Boom' },
-    { file: "9Mf0FTR.gif", name: 'Castle Sparkle' },
-    { file: "dIjeOFq.gif", name: 'Bongo Cat' },
-    { file: "c0BnYJc.gif", name: 'Cat Walk' },
-    { file: "8Vhseur.gif", name: 'Cheshire Grin' },
-    { file: "87SFGzU.gif", name: 'Crescent Moon' },
-    { file: "vrvbSoS.gif", name: 'Curl Swirl' },
-    { file: "62LWpGW.gif", name: 'Doodle Creature' },
-    { file: "Lkc25Tp.gif", name: 'Eye' },
-    { file: "eTQFQ30.gif", name: 'Fade Out' },
-    { file: "CQjFPee.gif", name: 'Figure Sketch' },
-    { file: "RPUf7R8.gif", name: 'Fuzzy Orb' },
-    { file: "8AlisMe.gif", name: 'Ghost' },
-    { file: "SjK1UNF.gif", name: 'Glitch Grid' },
-    { file: "xKCwq7P.gif", name: 'Glitch Stripes' },
-    { file: "OrHjqAB.gif", name: 'Gone' },
-    { file: "2XENnwN.gif", name: 'Google It' },
-    { file: "Wp9kcdN.gif", name: 'Half Moon' },
-    { file: "uuuX9AD.gif", name: 'Heart' },
-    { file: "eCqylDb.gif", name: 'Hero Icons' , delayScale: 2 },
-    { file: "hQ0YH0C.gif", name: 'Honeycomb' },
-    { file: "NKuoo8B.gif", name: 'Hook Arc' },
-    { file: "lpUt5va.gif", name: 'Hypno Swirl' },
-    { file: "KkzXklj.gif", name: "I Don't Need You" , delayScale: 2 },
-    { file: "Kc954CN.gif", name: 'I Love You' },
-    { file: "XtEnXuP.gif", name: 'Incline Rest' },
-    { file: "V338gWl.gif", name: 'Labs' },
-    { file: "JQxBkTD.gif", name: 'Loading Dots' },
-    { file: "bAgUQ6E.gif", name: 'Optical Rings' },
-    { file: "qh7IJt7.gif", name: 'PC Master Race' },
-    { file: "8mtMros.gif", name: 'Paper Airplane' },
-    { file: "5yZGqLK.gif", name: 'Polka Dots' },
-    { file: "FQmwbkd.gif", name: 'Reclining Figure' },
-    { file: "bJPgpEm.gif", name: 'Revolver Hand' },
-    { file: "v5Infnc.gif", name: 'Rude Stack' },
-    { file: "A4pFWMK.gif", name: 'Scratch Marks' },
-    { file: "kMu9kfg.gif", name: 'Smoke Fade' },
-    { file: "FvJiQKE.gif", name: 'Sound Waves' },
-    { file: "qLb6Dg0.gif", name: 'Spark Burst' },
-    { file: "0qklJOz.gif", name: 'Squiggle Sketch' },
-    { file: "AGFUdgz.gif", name: 'Start Screen' },
-    { file: "U8V5hMB.gif", name: 'Swirl Mark' },
-    { file: "MkxpfgN.gif", name: 'The End' },
-    { file: "yaMRvBI.gif", name: 'Walk The Dog' },
-    { file: "tzgjo4a.gif", name: 'Wave Line' },
-    { file: "pKFkBUl.gif", name: 'White Screen' }
+    { file: "2TP0MFR.gif", name: "Bad & Boujee" },
+    { file: "vaNQK2n.gif", name: "Bar Wave" },
+    { file: "t8IJvJi.gif", name: "Be Free!" },
+    { file: "dIjeOFq.gif", name: "Bongo Cat" },
+    { file: "eoimUey.gif", name: "Boom Headshot" },
+    { file: "WnHOHQG.gif", name: "Butterfly Bloom" },
+    { file: "8Vhseur.gif", name: "Cheshire Grin" },
+    { file: "3pdYDmI.gif", name: "Chevron Swipe" },
+    { file: "U8V5hMB.gif", name: "Crescent Orbit" },
+    { file: "JQxBkTD.gif", name: "Dot People" },
+    { file: "SjK1UNF.gif", name: "Error Glitch" },
+    { file: "v5Infnc.gif", name: "F*** You" },
+    { file: "62LWpGW.gif", name: "Fish Chase" },
+    { file: "OrHjqAB.gif", name: "Gone" },
+    { file: "2XENnwN.gif", name: "Google It" },
+    { file: "bJPgpEm.gif", name: "Heart Gun" },
+    { file: "uuuX9AD.gif", name: "Heart Ripple" },
+    { file: "kMu9kfg.gif", name: "Heartbeat" },
+    { file: "eCqylDb.gif", name: "Hero Faces", delayScale: 2 },
+    { file: "lpUt5va.gif", name: "Hypno Spiral" },
+    { file: "KkzXklj.gif", name: "I Don't…", delayScale: 2 },
+    { file: "Kc954CN.gif", name: "I Love You" },
+    { file: "87SFGzU.gif", name: "Infinite Love" },
+    { file: "bAgUQ6E.gif", name: "Kaleidoscope" },
+    { file: "V338gWl.gif", name: "Labs Glitch" },
+    { file: "XtEnXuP.gif", name: "Leg Raises" },
+    { file: "CQjFPee.gif", name: "Line Art Figure" },
+    { file: "hQ0YH0C.gif", name: "Mesh Sphere" },
+    { file: "RPUf7R8.gif", name: "Morphing Orb" },
+    { file: "tzgjo4a.gif", name: "One-Line Drawing" },
+    { file: "qh7IJt7.gif", name: "PC Master Race" },
+    { file: "8AlisMe.gif", name: "Pixel Ghost" },
+    { file: "5yZGqLK.gif", name: "Polka Dot Melt" },
+    { file: "AGFUdgz.gif", name: "Press Start" },
+    { file: "FvJiQKE.gif", name: "Ripple Rings" },
+    { file: "pKFkBUl.gif", name: "Rolling Ball" },
+    { file: "c0BnYJc.gif", name: "Running Cat" },
+    { file: "NKuoo8B.gif", name: "Say Hi" },
+    { file: "A4pFWMK.gif", name: "Scribble Out" },
+    { file: "Wp9kcdN.gif", name: "Sloshing Orb" },
+    { file: "9Mf0FTR.gif", name: "Space Shooter" },
+    { file: "8mtMros.gif", name: "Spinning Polygons" },
+    { file: "0qklJOz.gif", name: "Sticker Bomb" },
+    { file: "FQmwbkd.gif", name: "Sunbather" },
+    { file: "eTQFQ30.gif", name: "The Darkness" },
+    { file: "MkxpfgN.gif", name: "The End" },
+    { file: "vrvbSoS.gif", name: "Vortex" },
+    { file: "yaMRvBI.gif", name: "Walk the Dog" },
+    { file: "qLb6Dg0.gif", name: "Warp Pulse" },
+    { file: "xKCwq7P.gif", name: "Warped Stripes" },
+    { file: "Lkc25Tp.gif", name: "Watching Eye" }
   ]
   property bool keepDelayOnImport: false
 
@@ -157,14 +174,65 @@ Item {
   readonly property string spinFrames: pluginDir + "/assets/omarchy-oled-spin.frames"
   readonly property string wavesPreview: pluginDir + "/assets/omarchy-oled-waves.gif"
   readonly property string wavesFrames: pluginDir + "/assets/omarchy-oled-waves.frames"
+  readonly property string screensaverDir: pluginDir + "/assets/screensaver"
+  readonly property int screensaverDelayMs: 60
+  // Every effect make_screensaver.py records (one assets/screensaver/<name>.frames each).
+  readonly property var screensaverEffects: [
+    "beams", "binarypath", "blackhole", "bouncyballs", "bubbles", "burn",
+    "colorshift", "crumble", "decrypt", "errorcorrect", "expand", "fireworks",
+    "highlight", "laseretch", "matrix", "middleout", "orbittingvolley",
+    "overflow", "pour", "print", "rain", "randomsequence", "rings", "scattered",
+    "slice", "slide", "smoke", "spotlights", "spray", "swarm", "sweep",
+    "synthgrid", "thunderstorm", "unstable", "vhstape", "waves", "wipe"
+  ]
+  readonly property var screensaverEffectLabels: ({
+    "binarypath": "Binary Path", "blackhole": "Black Hole", "bouncyballs": "Bouncy Balls",
+    "colorshift": "Color Shift", "errorcorrect": "Error Correct", "laseretch": "Laser Etch",
+    "middleout": "Middle Out", "orbittingvolley": "Orbiting Volley",
+    "randomsequence": "Random Sequence", "synthgrid": "Synth Grid", "vhstape": "VHS Tape"
+  })
   readonly property string bundledRest: pluginDir + "/assets/omarchy-oled-128x40.bin"
-  readonly property var bundledOrder: ["omarchy", "static", "spin", "waves"]
+  readonly property var bundledOrder: ["omarchy", "static", "spin", "waves", "screensaver"]
+  readonly property var bundledLabels: ({ "omarchy": "Typewriter", "static": "Still", "spin": "Spin", "waves": "Waves", "screensaver": "Screensaver (all)" })
+  // Right-click menu: the cycle above, then each screensaver effect on its own.
+  readonly property var bundledMenuItems: {
+    var out = []
+    for (var i = 0; i < bundledOrder.length; i++)
+      out.push({ preset: bundledOrder[i], label: bundledLabels[bundledOrder[i]] })
+    for (var j = 0; j < screensaverEffects.length; j++)
+      out.push({ preset: "screensaver:" + screensaverEffects[j], label: "Screensaver: " + effectLabel(screensaverEffects[j]) })
+    return out
+  }
+
+  function isScreensaverPreset(name) {
+    name = String(name || "")
+    if (name === "screensaver") return true
+    return name.indexOf("screensaver:") === 0 && screensaverEffects.indexOf(name.slice(12)) !== -1
+  }
+
+  function effectLabel(effect) {
+    return screensaverEffectLabels[effect] || (effect.charAt(0).toUpperCase() + effect.slice(1))
+  }
+
+  function screensaverLabel(name) {
+    return name === "screensaver" ? "Screensaver" : "Screensaver: " + effectLabel(name.slice(12))
+  }
+
+  function shuffledEffects() {
+    var out = screensaverEffects.slice()
+    for (var i = out.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1))
+      var t = out[i]; out[i] = out[j]; out[j] = t
+    }
+    return out
+  }
   readonly property string previewUrl: {
     var path = defaultPreview
     if (isCustom) path = customPreview
     else if (isStatic) path = staticPreview
     else if (isSpin) path = spinPreview
     else if (isWaves) path = wavesPreview
+    else if (isScreensaver) path = screensaverDir + "/" + (preset === "screensaver" ? "decrypt" : preset.slice(12)) + ".gif"
     else if (isText) path = textPreview
     return "file://" + path
   }
@@ -178,9 +246,17 @@ Item {
   }
 
   function watchCommand() {
-    var cmd = ["python3", "-u", helper, "--watch", "--delay-ms", String(delayMs)]
+    var cmd = ["python3", "-u", helper, "--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)]
     if (invert) cmd.push("--invert")
-    if (isCustom) {
+    if (idleSyncActive || preset === "screensaver") {
+      var effects = shuffledEffects()
+      for (var i = 0; i < effects.length; i++)
+        cmd.push("--frames", screensaverDir + "/" + effects[i] + ".frames")
+      cmd.push("--rest", bundledRest)
+    } else if (isScreensaver) {
+      cmd.push("--frames", screensaverDir + "/" + preset.slice(12) + ".frames")
+      cmd.push("--rest", bundledRest)
+    } else if (isCustom) {
       cmd.push("--frames", customFrames)
       cmd.push("--rest", customRest)
     } else if (isStatic) {
@@ -297,6 +373,7 @@ Item {
   }
 
   function _renderText(text, style, font) {
+    textStale = false
     pendingKind = "text"
     pendingPreviewSuffix = textPreviewRev + 1
     lastError = ""
@@ -345,7 +422,8 @@ Item {
 
   function useText() {
     if (!hasText) return
-    setPreset("text")
+    if (textStale) _renderText(customText, textStyle, textFont)
+    else setPreset("text")
   }
 
   function reimportSaved() {
@@ -355,7 +433,7 @@ Item {
   }
 
   function setPreset(name) {
-    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && name !== "text" && name !== "custom")
+    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom")
       name = "omarchy"
     preset = name
     if (name === "spin") {
@@ -364,6 +442,9 @@ Item {
     } else if (name === "waves") {
       sourceLabel = "Waves"
       delayMs = 60
+    } else if (isScreensaverPreset(name)) {
+      sourceLabel = screensaverLabel(name)
+      delayMs = screensaverDelayMs
     } else if (name === "static") {
       sourceLabel = "Static"
       delayMs = 100
@@ -388,6 +469,40 @@ Item {
     setPreset("spin")
   }
 
+  // Dice button, scoped to the panel tab it was pressed from: "effects"
+  // picks a screensaver effect, "images" a library gif, "text" a text style,
+  // anything else a logo style. Never re-picks what's already playing.
+  function surpriseMe(scope) {
+    function pick(pool) { return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null }
+    var pool = []
+    var i
+    if (scope === "images") {
+      if (pickProcess.running || importProcess.running) return
+      for (i = 0; i < webGifs.length; i++)
+        if (!(isCustom && i === webGifIndex)) pool.push(i)
+      var idx = pick(pool)
+      if (idx !== null) _startWebGifImport(idx)
+    } else if (scope === "text") {
+      if (!hasText || pickProcess.running || importProcess.running) return
+      for (i = 0; i < textStyleOrder.length; i++)
+        if (!(isText && textStyleOrder[i] === textStyle)) pool.push(textStyleOrder[i])
+      var style = pick(pool)
+      if (style === null) return
+      if (isText) setTextStyle(style)
+      else _renderText(customText, style, textFont)
+    } else if (scope === "effects") {
+      for (i = 0; i < screensaverEffects.length; i++)
+        if (preset !== "screensaver:" + screensaverEffects[i]) pool.push("screensaver:" + screensaverEffects[i])
+      var effect = pick(pool)
+      if (effect !== null) setPreset(effect)
+    } else {
+      for (i = 0; i < bundledOrder.length; i++)
+        if (bundledOrder[i] !== preset) pool.push(bundledOrder[i])
+      var logo = pick(pool)
+      if (logo !== null) setPreset(logo)
+    }
+  }
+
   function cycleBundled() {
     var i = bundledOrder.indexOf(preset)
     setPreset(bundledOrder[(i + 1) % bundledOrder.length])
@@ -395,7 +510,7 @@ Item {
 
   function useCustom() {
     if (!hasCustom) return
-    if (sourceLabel === "" || sourceLabel === "Omarchy" || sourceLabel === "Static" || sourceLabel === "Spin")
+    if (sourceLabel === "" || sourceLabel === "Omarchy" || sourceLabel === "Static" || sourceLabel === "Spin" || sourceLabel.indexOf("Screensaver") === 0)
       sourceLabel = "Custom"
     setPreset("custom")
   }
@@ -410,6 +525,54 @@ Item {
 
   function toggleInvert() {
     setInvert(!invert)
+  }
+
+  function setIdleSync(on) {
+    on = !!on
+    if (idleSync === on) return
+    idleSync = on
+    if (settingsLoaded) scheduleSave()
+  }
+
+  function toggleIdleSync() {
+    setIdleSync(!idleSync)
+  }
+
+  function eventParts(event, count) {
+    try {
+      if (event && event.parse) return event.parse(count)
+    } catch (e) {}
+    return String(event && event.data ? event.data : "").split(",")
+  }
+
+  function setScreensaverWindow(address, visible) {
+    var key = String(address || "")
+    if (!key) return
+    var next = {}
+    var count = 0
+    for (var existing in screensaverWindows) {
+      if (existing !== key && screensaverWindows[existing]) {
+        next[existing] = true
+        count++
+      }
+    }
+    if (visible) {
+      next[key] = true
+      count++
+    }
+    screensaverWindows = next
+    screensaverWindowCount = count
+  }
+
+  function handleHyprlandEvent(event) {
+    var name = String(event && event.name ? event.name : "")
+    if (name === "openwindow") {
+      var open = eventParts(event, 4)
+      if (String(open[2] || "") === screensaverClass) setScreensaverWindow(open[0], true)
+    } else if (name === "closewindow") {
+      var address = String(eventParts(event, 1)[0] || "")
+      if (screensaverWindows[address]) setScreensaverWindow(address, false)
+    }
   }
 
   function setThreshold(value) {
@@ -471,12 +634,14 @@ Item {
     var nextPreset = "omarchy"
     var label = "Omarchy"
     var inv = false
+    var sync = true
     var thr = 50
     var delay = 100
     var srcFile = ""
     var txt = ""
     var txtStyle = "typewriter"
-    var txtFont = "jetbrains"
+    var txtFont = "omarchy"
+    var stale = false
     var txtDelay = 100
     var customRev = 0
     var textRev = 0
@@ -488,39 +653,46 @@ Item {
         else if (obj && obj.source === "static") nextPreset = "static"
         else if (obj && obj.source === "spin") nextPreset = "spin"
         else if (obj && obj.source === "waves") nextPreset = "waves"
+        else if (obj && isScreensaverPreset(obj.source)) nextPreset = String(obj.source)
         else if (obj && obj.source === "text") nextPreset = "text"
         if (obj && obj.label) label = String(obj.label)
         if (obj && obj.invert === true) inv = true
+        if (obj && obj.idleSync === false) sync = false
         if (obj && obj.threshold !== undefined) thr = Math.max(5, Math.min(95, Math.round(Number(obj.threshold))))
         if (obj && obj.delayMs !== undefined) delay = Math.max(50, Math.min(500, Math.round(Number(obj.delayMs))))
         if (obj && obj.sourceFile) srcFile = String(obj.sourceFile)
         if (obj && obj.text) txt = String(obj.text)
         if (obj && obj.textStyle && textStyleOrder.indexOf(String(obj.textStyle)) !== -1) txtStyle = String(obj.textStyle)
         if (obj && obj.textFont && textFontOrder.indexOf(String(obj.textFont)) !== -1) txtFont = String(obj.textFont)
+        else if (obj && obj.textFont && txt !== "") stale = true
         if (obj && obj.textDelayMs !== undefined) txtDelay = Math.max(50, Math.min(500, Math.round(Number(obj.textDelayMs))))
         if (obj && obj.customPreviewRev !== undefined) customRev = Math.max(0, Math.round(Number(obj.customPreviewRev)))
         if (obj && obj.textPreviewRev !== undefined) textRev = Math.max(0, Math.round(Number(obj.textPreviewRev)))
       } catch (e) {}
     }
     invert = inv
+    idleSync = sync
     threshold = thr
     delayMs = delay
     sourceFile = srcFile
     customText = txt
     textStyle = txtStyle
     textFont = txtFont
+    textStale = stale
     textDelayMs = txtDelay
     customPreviewRev = customRev
     textPreviewRev = textRev
     preset = nextPreset
     if (nextPreset === "spin") sourceLabel = "Spin"
     else if (nextPreset === "waves") sourceLabel = "Waves"
+    else if (isScreensaverPreset(nextPreset)) sourceLabel = screensaverLabel(nextPreset)
     else if (nextPreset === "static") sourceLabel = "Static"
     else if (nextPreset === "custom") sourceLabel = label || "Custom"
     else if (nextPreset === "text") sourceLabel = txt || "Text"
     else sourceLabel = "Omarchy"
     settingsLoaded = true
     setEnabled(on)
+    if (textStale && nextPreset === "text") _renderText(customText, textStyle, textFont)
   }
 
   function scheduleSave() {
@@ -534,6 +706,7 @@ Item {
       source: preset,
       label: sourceLabel,
       invert: invert,
+      idleSync: idleSync,
       threshold: threshold,
       delayMs: delayMs,
       sourceFile: sourceFile,
@@ -604,6 +777,11 @@ Item {
       if (!root.stopping && root.enabled)
         restartTimer.restart()
     }
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) { root.handleHyprlandEvent(event) }
   }
 
   Process {

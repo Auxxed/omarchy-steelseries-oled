@@ -1,9 +1,10 @@
 # SteelSeries OLED
 
 Omarchy plugin for the OLED on a SteelSeries Apex keyboard: the official
-**OMARCHY** wordmark by default, or a 3D spin/waves/static cycle of it, a
+**OMARCHY** wordmark by default, or a 3D spin/waves/static cycle of it, the
+Omarchy screensaver's text effects, a
 custom GIF or still image, a random pull from a bundled or online gif
-library, or your own typed text — rendered in JetBrains Mono or in
+library, or your own typed text — rendered in
 **Omarchy Block**, a companion display font built for this plugin from the
 wordmark's own letterforms.
 
@@ -19,23 +20,53 @@ running. Turning Display off (or `apply.py --release`) blanks the panel.
 
 ## Gallery
 
-The bar panel — Display/Invert, contrast and speed, bundled art and grab-a-gif
-cycling, and the custom-text field with its font and style pickers:
+The bar panel: a live, pixel-exact copy of the keyboard's screen up top, then
+Logo · Effects · Images · Text tabs. Here **Surprise me** hops through
+screensaver effects, with a quick flip of **Invert** in the middle
+([MP4](media/panel-demo.mp4)):
 
-<img src="panel.png" width="420" alt="The SteelSeries OLED panel open in the Omarchy bar, showing Display and Invert toggles, contrast and speed sliders, and the custom-text controls">
+<img src="media/panel-demo.gif" width="440" alt="The SteelSeries OLED panel: pressing Surprise me cycles the live OLED preview through Decrypt, Rain, Highlight, Scattered, Random Sequence and Burn, with Invert toggled on and off">
+
+<table>
+<tr>
+<td align="center" width="50%"><b>Logo</b><br><img src="media/panel-logo.png" width="300" alt="Logo tab: Typewriter, Still, Spin, Waves and Screensaver (all) chips, with the wordmark spinning in the preview"></td>
+<td align="center" width="50%"><b>Effects</b><br><img src="media/panel-effects.png" width="300" alt="Effects tab: a searchable grid of all 37 screensaver effects, with Fireworks playing"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>Images</b><br><img src="media/panel-images.png" width="300" alt="Images tab: searchable GIF library, Choose image, Last image and the Contrast slider, with Night Runner playing"></td>
+<td align="center" width="50%"><b>Text</b><br><img src="media/panel-text.png" width="300" alt="Text tab: the text box and style chips, with DrugBust rendered in Omarchy Block"></td>
+</tr>
+</table>
+
+### Screensaver effects
+
+All 37 effects from Omarchy's idle screensaver, recorded from `ttfx` and
+rendered pixel-for-pixel as they appear on the 128×40 OLED
+([MP4](media/oled-effects.mp4)):
+
+<img src="media/oled-effects.gif" width="560" alt="Decrypt, Fireworks, Matrix, Black Hole, Rain and Synth Grid playing on the OLED, each resolving into the Omarchy logo">
+
+<details>
+<summary>Every effect, mid-animation</summary>
+
+<img src="media/oled-effects-gallery.png" alt="A grid of all 37 screensaver effects on the OLED, from Beams to Wipe">
+
+</details>
+
+### Bundled art
 
 <table>
 <tr>
 <td align="center" width="50%">
 
-**Waves** — one step of the bundled wordmark cycle
+**Waves**: one step of the bundled wordmark cycle
 
 <img src="assets/omarchy-oled-waves.gif" width="320" alt="Omarchy wordmark rippling across the OLED in the waves style">
 
 </td>
 <td align="center" width="50%">
 
-**Night Runner** — a bundled "grab a gif" pick
+**Night Runner**: one of the two GIFs that ship with the plugin
 
 <img src="assets/nightrunner.gif" width="320" alt="Night Runner pixel-art animation looping on the OLED">
 
@@ -92,21 +123,32 @@ does not land immediately.
 
 ## Usage
 
-- Left click the bar icon: open the panel
-- **Display** (or right-click the icon): turn the loop on or off. Off blanks the panel.
-- **Invert**: flip black and white (the panel preview follows)
-- **Speed**: frame delay
-- **Contrast**: 1-bit threshold for a custom image
-- **Omarchy Logo** cycles the bundled wordmark art: typewriter loop → still → 3D spin → waves
-- **Choose image** imports a GIF or still (png/jpg/webp/bmp), resized to 128×40 1-bit. **Use last image** brings a custom import back.
-- The **#** button grabs a random OLED gif — Stick Fight and Night Runner ship
-  with the plugin, the rest are fetched on demand from nlog.us. Right-click
-  to search and pick one by name instead of cycling.
-- Type your own text, then pick a **font** (JetBrains Mono for full
-  character coverage, or Omarchy Block to match the logo) and a **style**
-  (typewriter/static/spin/waves) — click either button to cycle, right-click
-  to pick from a list. **Use text** switches the OLED to it.
-- **Allow access** appears only when the keyboard is present but not writable
+Left click the bar icon to open the panel.
+
+- **Header switch** (or right-click the bar icon, or Space): turn the OLED on
+  or off. Off blanks the panel.
+- **Preview**: a live copy of what the keyboard shows. The badge reads LIVE
+  while streaming, IDLE while following the screensaver.
+- **◐ Invert** (or I): flip black and white. The preview follows.
+- **Surprise me** (or R): a random pick from the tab you're on (a logo
+  style, a screensaver effect, a library GIF, or a style for your text).
+- **Logo** tab: Typewriter, Still, Spin, Waves, or **Screensaver (all)**,
+  which plays all 37 effects shuffled, like the real screensaver.
+- **Effects** tab: a searchable grid of every screensaver effect; click one
+  to loop it on its own.
+- **Images** tab: search the GIF library (Stick Fight and Night Runner ship
+  with the plugin, the rest are fetched on demand from nlog.us), step through
+  it with **Next**, **Choose image** to import your own GIF or still
+  (png/jpg/webp/bmp, resized to 128×40 1-bit), or bring back your **Last
+  image**. **Contrast** sets the 1-bit threshold for custom images.
+- **Text** tab: type your own text (rendered in Omarchy Block, caps only)
+  and pick a **style** (typewriter/static/spin/waves). **Show** switches the
+  OLED to it.
+- **Follow screensaver**: while Omarchy's idle screensaver is up, the OLED
+  plays the screensaver effects too, then goes back to whatever it was showing.
+- **Speed**: frame delay (also shown as fps).
+- **Allow keyboard access** (or U) appears only when the keyboard is present
+  but not writable.
 - `omarchy-shell io.github.auxxed.steelseries-oled power`
 
 ## Remove
@@ -139,9 +181,9 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --i
 # Blank the panel
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --release
 
-# Render typed text (style: typewriter/static/spin/waves, font: jetbrains/omarchy)
+# Render typed text (style: typewriter/static/spin/waves)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
-  --render-text "HYPR" --style spin --font omarchy \
+  --render-text "HYPR" --style spin \
   --out-dir ~/.local/state/omarchy/steelseries-oled
 ```
 
@@ -149,11 +191,16 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
 `omarchy-oled-static.frames` and `omarchy-oled-spin.frames` and
 `omarchy-oled-waves.frames` alongside it for the other bundled cycle steps.
 Regenerate all of them from the still wordmark with `python3 make_gif.py`
-(needs ImageMagick). The `.png` is the same still, sized for SteelSeries GG
+(needs ImageMagick). `assets/screensaver/<effect>.frames` (one per effect,
+with a `.gif` preview) come from `python3 make_screensaver.py [effect ...]`,
+which records `ttfx` playing
+`~/.config/omarchy/branding/screensaver.txt` in a pseudo-terminal and
+rasterises each character cell onto the 128×40 panel (needs `ttfx` and
+ImageMagick; build time only). The `.png` is the same still, sized for SteelSeries GG
 if you ever set a static idle screen from Windows.
 
 Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
-`invert.frag`, `apply.py`, `make_gif.py`, `udev/71-steelseries-apex-oled.rules`.
+`invert.frag`, `apply.py`, `make_gif.py`, `make_screensaver.py`, `udev/71-steelseries-apex-oled.rules`.
 
 ## How it works
 
@@ -190,8 +237,8 @@ grid letterforms from `logo.svg` for O/M/A/R/C/H/Y, then extends that same
 chamfered-block, staircase-diagonal construction to the rest of A–Z and
 0–9, so short custom-text lockups can match the logo's style. It's a
 caps-only display face — lowercase maps to the same outlines, and it has no
-extended punctuation — which is why JetBrains Mono stays the default font
-for typed text.
+extended punctuation, so typed text shows in capitals and characters it
+doesn't cover are skipped.
 
 `assets/stickfight.gif` is SteelSeries' own "Stick Fight" OLED gif from their
 [OLED customization blog post](https://steelseries.com/blog/steelseries-oled-gifs-and-customization-137).

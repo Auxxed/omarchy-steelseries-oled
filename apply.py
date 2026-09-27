@@ -37,15 +37,13 @@ MAX_IMPORT_FRAMES = 96
 IMPORT_URL_HOSTS = {"www.nlog.us", "nlog.us"}
 # The real wordmark is a one-off logotype font with glyphs only for O/M/A/R/C/H/Y.
 # "omarchy" extends that same 15-unit-grid construction to the full alphabet,
-# digits, and basic punctuation, so short lockups can match the logo exactly —
-# but it has no lowercase (maps to caps) or extended punctuation. "jetbrains"
-# is the boldest full font on the system's font list, chosen for legibility
-# once shrunk to 128x40 and thresholded to 1-bit, and covers anything typed.
+# digits, and basic punctuation, so short lockups match the logo exactly. It
+# has no lowercase (maps to caps) or extended punctuation. Any other --font
+# value (e.g. the old "jetbrains") falls back to it.
 TEXT_FONTS = {
     "omarchy": os.path.join(HERE, "assets", "fonts", "OmarchyBlock-Regular.ttf"),
-    "jetbrains": "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf",
 }
-DEFAULT_TEXT_FONT = "jetbrains"
+DEFAULT_TEXT_FONT = "omarchy"
 MAX_TEXT_CHARS = 24
 TEXT_STYLES = {"typewriter", "static", "spin", "waves"}
 
@@ -613,7 +611,10 @@ def main() -> None:
     import_src = take_opt(args, "--import")
     import_url = take_opt(args, "--import-url")
     out_dir = take_opt(args, "--out-dir")
-    frames_path = take_opt(args, "--frames")
+    # --frames may repeat; the loops play back to back (delay from the first).
+    frames_paths = []
+    while "--frames" in args:
+        frames_paths.append(take_opt(args, "--frames"))
     rest_path = take_opt(args, "--rest")
     threshold_opt = take_opt(args, "--threshold")
     delay_opt = take_opt(args, "--delay-ms")
@@ -657,7 +658,9 @@ def main() -> None:
     if delay_override == 0:
         delay_override = None
     rest = load_static(invert, rest_path)
-    frames, delay_s = load_frames(invert, frames_path, delay_override)
+    frames, delay_s = load_frames(invert, frames_paths[0] if frames_paths else None, delay_override)
+    for extra in frames_paths[1:]:
+        frames.extend(load_frames(invert, extra, delay_override)[0])
     if watch_mode:
         watch(frames, delay_s)
         return
