@@ -14,6 +14,7 @@ Panel {
   readonly property bool ready: !!oled
   readonly property bool on: ready && oled.enabled
   readonly property bool live: ready && oled.looping
+  readonly property bool asleep: on && oled.sleeping
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.45)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -180,7 +181,7 @@ Panel {
                   // when the content is actually the same — no cache-busting
                   // trick needed, and no stale frame to worry about.
                   source: root.ready ? root.oled.previewUrl : ""
-                  opacity: root.on ? 1 : 0.25
+                  opacity: root.on && !root.asleep ? 1 : 0.25
                   layer.enabled: root.ready && root.oled.invert
                   layer.smooth: false
                   layer.effect: ShaderEffect {
@@ -208,9 +209,9 @@ Panel {
 
                 Text {
                   anchors.centerIn: parent
-                  visible: root.ready && !root.on
+                  visible: root.ready && (!root.on || root.asleep)
                   textFormat: Text.PlainText
-                  text: "DISPLAY OFF"
+                  text: root.asleep ? "ASLEEP" : "DISPLAY OFF"
                   color: Util.alpha("#ffffff", 0.55)
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -733,6 +734,35 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: if (root.ready) root.oled.toggleIdleSync()
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Sleep when idle"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            ButtonGroup {
+              width: parent.width
+              options: [
+                { value: "0", label: "Never" },
+                { value: "5", label: "5 min" },
+                { value: "10", label: "10 min" },
+                { value: "30", label: "30 min" },
+                { value: "60", label: "1 hr" }
+              ]
+              value: root.ready ? String(root.oled.sleepMinutes) : "10"
+              fontSize: Style.font.bodySmall
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { if (root.ready) root.oled.setSleepMinutes(Number(v)) }
             }
           }
 

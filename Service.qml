@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import Quickshell.Wayland
 
 // Headless service: stream the Omarchy GIF to a SteelSeries Apex OLED.
 // apply.py watches hidraw. The bar widget reads status from this singleton.
@@ -50,6 +51,24 @@ Item {
   readonly property string screensaverClass: "org.omarchy.screensaver"
   readonly property bool idleSyncActive: idleSync && screensaverWindowCount > 0
   onIdleSyncActiveChanged: if (settingsLoaded && enabled) startWatch()
+
+  // Burn-in guard: after this many idle minutes (0 = never) the OLED goes
+  // dark until the next input. Uses the same ext-idle-notify monitor as the
+  // shell's idle service, so idle inhibitors (video, stay-awake) keep it lit.
+  property int sleepMinutes: 10
+  readonly property var sleepOptions: [0, 5, 10, 30, 60]
+  readonly property bool sleeping: sleepMinutes > 0 && idleMonitor.isIdle
+  onSleepingChanged: {
+    if (!settingsLoaded || !enabled) return
+    if (sleeping) stopWatch()
+    else startWatch()
+  }
+
+  // Restarts are sequenced: the old helper must exit before the new one
+  // starts, and only an exit nobody asked for arms the crash-retry timer.
+  // (Re-arming it on every intentional kill restarted the stream every 5 s.)
+  property bool restartQueued: false
+  property bool releaseQueued: false
 
   property bool invert: false
   property int threshold: 50
@@ -238,6 +257,7 @@ Item {
   }
   readonly property string statusLabel: {
     if (!enabled) return "Off"
+    if (sleeping) return "Asleep"
     if (needsUdev) return "Needs access"
     if (looping) return "On"
     if (state === "disconnected") return "No keyboard"
@@ -297,10 +317,20 @@ Item {
   }
 
   function startWatch() {
-    if (stopping || !enabled || pluginDir === "")
+    if (stopping || !enabled || sleeping || pluginDir === "")
       return
-    if (watchProcess.running)
+    restartTimer.stop()
+    releaseQueued = false
+    if (watchProcess.running) {
+      restartQueued = true
       watchProcess.running = false
+      return
+    }
+    launchWatch()
+  }
+
+  function launchWatch() {
+    restartQueued = false
     state = "starting"
     watchProcess.command = watchCommand()
     watchProcess.running = true
@@ -308,9 +338,20 @@ Item {
 
   function stopWatch() {
     restartTimer.stop()
-    if (watchProcess.running)
-      watchProcess.running = false
+    restartQueued = false
     state = "off"
+    if (watchProcess.running) {
+      // Blank only once the stream has stopped, or its last frame can land
+      // after the blank one.
+      releaseQueued = true
+      watchProcess.running = false
+      return
+    }
+    runRelease()
+  }
+
+  function runRelease() {
+    releaseQueued = false
     if (pluginDir === "" || restProcess.running)
       return
     restProcess.command = restCommand()
@@ -538,6 +579,13 @@ Item {
     setIdleSync(!idleSync)
   }
 
+  function setSleepMinutes(value) {
+    var next = Math.round(Number(value))
+    if (sleepOptions.indexOf(next) === -1 || next === sleepMinutes) return
+    sleepMinutes = next
+    if (settingsLoaded) scheduleSave()
+  }
+
   function eventParts(event, count) {
     try {
       if (event && event.parse) return event.parse(count)
@@ -592,7 +640,7 @@ Item {
   }
 
   function handleLine(line) {
-    if (!line || !enabled) return
+    if (!line || !enabled || sleeping) return
     var msg = null
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg || typeof msg !== "object") return
@@ -635,6 +683,7 @@ Item {
     var label = "Omarchy"
     var inv = false
     var sync = true
+    var sleepMin = 10
     var thr = 50
     var delay = 100
     var srcFile = ""
@@ -658,6 +707,8 @@ Item {
         if (obj && obj.label) label = String(obj.label)
         if (obj && obj.invert === true) inv = true
         if (obj && obj.idleSync === false) sync = false
+        if (obj && obj.sleepMinutes !== undefined && sleepOptions.indexOf(Math.round(Number(obj.sleepMinutes))) !== -1)
+          sleepMin = Math.round(Number(obj.sleepMinutes))
         if (obj && obj.threshold !== undefined) thr = Math.max(5, Math.min(95, Math.round(Number(obj.threshold))))
         if (obj && obj.delayMs !== undefined) delay = Math.max(50, Math.min(500, Math.round(Number(obj.delayMs))))
         if (obj && obj.sourceFile) srcFile = String(obj.sourceFile)
@@ -672,6 +723,7 @@ Item {
     }
     invert = inv
     idleSync = sync
+    sleepMinutes = sleepMin
     threshold = thr
     delayMs = delay
     sourceFile = srcFile
@@ -707,6 +759,7 @@ Item {
       label: sourceLabel,
       invert: invert,
       idleSync: idleSync,
+      sleepMinutes: sleepMinutes,
       threshold: threshold,
       delayMs: delayMs,
       sourceFile: sourceFile,
@@ -774,9 +827,17 @@ Item {
       }
     }
     onExited: {
-      if (!root.stopping && root.enabled)
-        restartTimer.restart()
+      if (root.restartQueued) root.launchWatch()
+      else if (root.releaseQueued) root.runRelease()
+      else if (!root.stopping && root.enabled && !root.sleeping) restartTimer.restart()
     }
+  }
+
+  IdleMonitor {
+    id: idleMonitor
+    enabled: root.sleepMinutes > 0
+    timeout: Math.max(1, root.sleepMinutes) * 60
+    respectInhibitors: true
   }
 
   Connections {
@@ -885,6 +946,7 @@ Item {
     target: "io.github.auxxed.steelseries-oled"
     function udev(): void { root.installUdev() }
     function status(): string { return root.statusLabel }
+    function sleepAfter(minutes: int): void { root.setSleepMinutes(minutes) }
     function power(): void { root.toggleEnabled() }
   }
 

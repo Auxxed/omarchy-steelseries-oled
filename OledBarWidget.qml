@@ -66,9 +66,12 @@ BarWidget {
     active: false
     useActiveColor: false
     dimmed: !(root.ready && root.oled.enabled)
-    tooltipText: root.ready
-      ? (root.oled.enabled ? "OLED on" : "OLED off")
-      : "OLED"
+    tooltipText: {
+      if (!root.ready) return "OLED"
+      if (!root.oled.enabled) return "OLED off"
+      if (root.oled.sleeping) return "OLED asleep"
+      return "OLED: " + root.oled.sourceLabel
+    }
     onPressed: function(b) {
       if (b === Qt.LeftButton) root.toggle()
       else if (b === Qt.RightButton && root.ready) root.oled.toggleEnabled()

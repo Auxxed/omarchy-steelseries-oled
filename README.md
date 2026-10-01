@@ -146,10 +146,14 @@ Left click the bar icon to open the panel.
   OLED to it.
 - **Follow screensaver**: while Omarchy's idle screensaver is up, the OLED
   plays the screensaver effects too, then goes back to whatever it was showing.
+- **Sleep when idle**: Never, 5, 10 (default), 30 or 60 minutes. After that
+  long without input the OLED goes dark to spare it from burn-in, and wakes on
+  the next keypress. Idle inhibitors (a playing video, stay-awake) keep it lit.
 - **Speed**: frame delay (also shown as fps).
 - **Allow keyboard access** (or U) appears only when the keyboard is present
   but not writable.
-- `omarchy-shell io.github.auxxed.steelseries-oled power`
+- `omarchy-shell io.github.auxxed.steelseries-oled power` toggles the OLED;
+  `... sleepAfter 30` sets the idle timeout (0 turns it off).
 
 ## Remove
 
@@ -207,7 +211,9 @@ Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qm
 A headless `service` starts `apply.py --watch`. That process finds USB vendor
 `1038` on HID interface 1, then streams 642-byte feature reports (`0x61` + 640
 packed pixels) at 10 fps — the same payload Linux Apex 7 tools have used for
-years. JSON status lines drive the bar widget.
+years. JSON status lines drive the bar widget. A still is re-sent only twice a
+second, and the helper exits by itself if the shell that started it goes away,
+so a shell restart never leaves a second stream fighting over the panel.
 
 The idle image lives in keyboard RAM. Firmware restores its own logo after a
 power cycle unless this service is running.

@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "io.github.auxxed.steelseries-oled",
   "name": "SteelSeries OLED",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "author": "auxxed",
   "license": "MIT",
   "homepage": "https://github.com/Auxxed/omarchy-steelseries-oled",
-  "description": "Omarchy wordmark, 3D spin, screensaver effects, or your own GIF on SteelSeries Apex OLED keyboards, with invert, speed, and on/off.",
+  "description": "Omarchy wordmark, 3D spin, screensaver effects, or your own GIF on SteelSeries Apex OLED keyboards, with invert, speed, idle sleep, and on/off.",
   "kinds": ["service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {

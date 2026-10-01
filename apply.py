@@ -29,6 +29,7 @@ BIN_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.bin")
 FRAMES_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.frames")
 FRAMES_MAGIC = b"OLEDGIF1"
 POLL_SECONDS = 2.0
+STILL_RESEND_S = 0.5
 DEFAULT_DELAY_S = 0.10
 OLED_W, OLED_H = 128, 40
 MAX_IMPORT_BYTES = 40 * 1024 * 1024
@@ -550,55 +551,78 @@ def emit(state: str, **fields: object) -> None:
 
 
 def watch(frames: list[bytes], delay_s: float) -> None:
+    # The shell doesn't always take its children with it (omarchy-restart-shell
+    # leaves them reparented to the user manager), and an orphan keeps
+    # streaming its old preset interleaved with the new shell's. Bail out as
+    # soon as the parent that launched us is gone.
+    parent = os.getppid()
+    # A still only needs re-sending often enough to win the panel back from
+    # the firmware's own overlays (volume, media keys), not at full frame rate.
+    if len(set(frames)) == 1:
+        delay_s = max(delay_s, STILL_RESEND_S)
     last = None
     denied: set[str] = set()
     fd: int | None = None
+    path: str | None = None
     idx = 0
+    next_frame = time.monotonic()
     while True:
-        path = find_oled_hidraw()
-        if path != last:
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-                fd = None
-            last = path
-            idx = 0
-            if path is None:
-                emit("disconnected")
-            else:
-                try:
-                    fd = os.open(path, os.O_RDWR)
-                    denied.discard(path)
-                    emit("looping", path=path)
-                except PermissionError:
-                    emit("denied", path=path)
-                    if path not in denied:
-                        print(
-                            f"steelseries-oled: cannot write {path} "
-                            "(install the udev rule, then unplug/replug)",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        denied.add(path)
-                    last = None
-                except OSError as exc:
-                    emit("error", path=path, message=str(exc))
-                    last = None
+        if os.getppid() != parent:
+            return
+        # Scanning sysfs costs ~2 ms, so only do it while there's no open
+        # device; an unplug or replug surfaces as a failed write instead.
+        if fd is None:
+            path = find_oled_hidraw()
+            if path != last:
+                last = path
+                idx = 0
+                if path is None:
+                    emit("disconnected")
+                else:
+                    try:
+                        fd = os.open(path, os.O_RDWR)
+                        denied.discard(path)
+                        emit("looping", path=path)
+                    except PermissionError:
+                        emit("denied", path=path)
+                        if path not in denied:
+                            print(
+                                f"steelseries-oled: cannot write {path} "
+                                "(install the udev rule, then unplug/replug)",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            denied.add(path)
+                        last = None
+                    except OSError as exc:
+                        emit("error", path=path, message=str(exc))
+                        last = None
         if fd is not None:
             try:
                 send_feature_fd(fd, frames[idx % len(frames)])
                 idx += 1
             except OSError as exc:
-                emit("error", path=path, message=str(exc))
+                # A vanished node is just an unplug; the rescan reports it.
+                if path is not None and os.path.exists(path):
+                    emit("error", path=path, message=str(exc))
                 try:
                     os.close(fd)
                 except OSError:
                     pass
                 fd = None
                 last = None
-        time.sleep(delay_s if fd is not None else POLL_SECONDS)
+        if fd is None:
+            time.sleep(POLL_SECONDS)
+            next_frame = time.monotonic()
+            continue
+        # Hold a steady frame clock rather than sleeping a full delay after
+        # each variable-length USB write, and never burst to catch up.
+        next_frame += delay_s
+        wait = next_frame - time.monotonic()
+        if wait < 0:
+            next_frame = time.monotonic()
+            wait = 0
+        time.sleep(wait)
 
 
 def main() -> None:
