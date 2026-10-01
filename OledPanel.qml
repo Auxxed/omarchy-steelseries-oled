@@ -28,14 +28,35 @@ Panel {
     { value: "logo", label: "Logo" },
     { value: "effects", label: "Effects" },
     { value: "images", label: "Images" },
-    { value: "text", label: "Text" }
+    { value: "text", label: "Text" },
+    { value: "create", label: "Create" }
   ]
+
+  // Create tab: the stage becomes the canvas. Left paints with the current
+  // tool, right does the opposite (ink <-> erase).
+  readonly property bool creating: tab === "create"
+  // Animated drawings show their rendered loop; the editable canvas takes
+  // over while the cursor is on the stage, before the first render, or
+  // when the drawing isn't on the OLED yet.
+  readonly property bool animatedPreview: ready && oled.isDraw && oled.drawAnimated && !oled.drawPreviewStale
+  readonly property bool showCanvas: ready && (creating || oled.isDraw)
+    && (!animatedPreview || (creating && (painter.containsMouse || painter.pressed)))
+  property string drawTool: "pen"
+  property int brush: 1
+  readonly property var drawTools: [
+    { value: "pen", label: "Pen" },
+    { value: "erase", label: "Erase" },
+    { value: "line", label: "Line" },
+    { value: "box", label: "Box" }
+  ]
+  readonly property var brushSizes: [1, 2, 3, 5]
 
   function tabForPreset() {
     if (!ready) return "logo"
     if (oled.isScreensaver) return "effects"
     if (oled.isCustom) return "images"
     if (oled.isText) return "text"
+    if (oled.isDraw) return "create"
     return "logo"
   }
 
@@ -63,7 +84,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(440))
+    // Wider while creating so each OLED pixel is a bigger target.
+    contentWidth: panel.fittedContentWidth(Style.space(root.creating ? 572 : 440))
     contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(780))
 
     PanelKeyCatcher {
@@ -78,6 +100,8 @@ Panel {
         else if ((t === "r" || t === "R") && root.ready) root.oled.surpriseMe(root.tab)
         else if ((t === "u" || t === "U") && root.ready && root.oled.needsUdev)
           root.oled.installUdev()
+        else if ((t === "z" || t === "Z") && root.ready && root.creating)
+          root.oled.drawUndo()
       }
 
       Flickable {
@@ -170,6 +194,7 @@ Panel {
 
                 AnimatedImage {
                   anchors.fill: parent
+                  visible: !root.showCanvas
                   fillMode: Image.Stretch
                   asynchronous: false
                   cache: true
@@ -192,6 +217,110 @@ Panel {
                   Behavior on opacity { NumberAnimation { duration: 220 } }
                 }
 
+                // The drawing, run-length filled per row so a full repaint is
+                // at most a few hundred rects.
+                Canvas {
+                  id: drawCanvas
+                  anchors.fill: parent
+                  visible: root.showCanvas
+                  readonly property int rev: root.ready ? root.oled.drawRev : 0
+                  onRevChanged: requestPaint()
+                  onVisibleChanged: if (visible) requestPaint()
+                  onWidthChanged: requestPaint()
+                  opacity: root.on && !root.asleep ? 1 : 0.25
+                  layer.enabled: root.ready && root.oled.invert
+                  layer.smooth: false
+                  layer.effect: ShaderEffect {
+                    fragmentShader: Qt.resolvedUrl("invert.frag.qsb")
+                  }
+                  onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.fillStyle = "#000000"
+                    ctx.fillRect(0, 0, width, height)
+                    if (!root.ready) return
+                    var pix = root.oled.drawPixels
+                    var s = stage.px
+                    ctx.fillStyle = "#ffffff"
+                    for (var y = 0; y < 40; y++) {
+                      var run = -1
+                      for (var x = 0; x <= 128; x++) {
+                        var lit = x < 128 && pix[y * 128 + x]
+                        if (lit && run < 0) run = x
+                        else if (!lit && run >= 0) {
+                          ctx.fillRect(run * s, y * s, (x - run) * s, s)
+                          run = -1
+                        }
+                      }
+                    }
+                  }
+                }
+
+                MouseArea {
+                  id: painter
+                  anchors.fill: parent
+                  enabled: root.ready && root.creating
+                  hoverEnabled: true
+                  preventStealing: true
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+                  cursorShape: Qt.CrossCursor
+                  property int lastX: -1
+                  property int lastY: -1
+                  property int startX: 0
+                  property int startY: 0
+                  property int hoverX: -1
+                  property int hoverY: -1
+                  property bool ink: true
+
+                  function cellX(v) { return Math.max(0, Math.min(127, Math.floor(v / stage.px))) }
+                  function cellY(v) { return Math.max(0, Math.min(39, Math.floor(v / stage.px))) }
+
+                  function apply(x, y) {
+                    var o = root.oled
+                    if (root.drawTool === "line") o.previewLine(startX, startY, x, y, ink, root.brush)
+                    else if (root.drawTool === "box") o.previewRect(startX, startY, x, y, ink, root.brush)
+                    else o.paintSegment(lastX, lastY, x, y, ink, root.brush)
+                    lastX = x
+                    lastY = y
+                  }
+
+                  onPressed: function(mouse) {
+                    ink = (mouse.button === Qt.LeftButton) !== (root.drawTool === "erase")
+                    startX = lastX = cellX(mouse.x)
+                    startY = lastY = cellY(mouse.y)
+                    root.oled.beginStroke()
+                    apply(startX, startY)
+                  }
+                  onPositionChanged: function(mouse) {
+                    hoverX = cellX(mouse.x)
+                    hoverY = cellY(mouse.y)
+                    if (!pressed) return
+                    if (hoverX === lastX && hoverY === lastY) return
+                    apply(hoverX, hoverY)
+                  }
+                  onReleased: root.oled.endStroke()
+                  onCanceled: root.oled.endStroke()
+                  onExited: hoverX = -1
+                  // Wheel steps the brush size.
+                  onWheel: function(wheel) {
+                    var i = root.brushSizes.indexOf(root.brush)
+                    i = Math.max(0, Math.min(root.brushSizes.length - 1, i + (wheel.angleDelta.y > 0 ? 1 : -1)))
+                    root.brush = root.brushSizes[i]
+                  }
+                }
+
+                // Brush footprint under the cursor.
+                Rectangle {
+                  visible: painter.enabled && painter.hoverX >= 0
+                  readonly property int r0: -Math.floor((root.brush - 1) / 2)
+                  x: (painter.hoverX + r0) * stage.px
+                  y: (painter.hoverY + r0) * stage.px
+                  width: root.brush * stage.px
+                  height: width
+                  color: "transparent"
+                  border.width: 1
+                  border.color: Color.accent
+                }
+
                 // Dot-matrix grid: a hairline between every OLED pixel.
                 Canvas {
                   anchors.fill: parent
@@ -209,7 +338,7 @@ Panel {
 
                 Text {
                   anchors.centerIn: parent
-                  visible: root.ready && (!root.on || root.asleep)
+                  visible: root.ready && (!root.on || root.asleep) && !root.creating
                   textFormat: Text.PlainText
                   text: root.asleep ? "ASLEEP" : "DISPLAY OFF"
                   color: Util.alpha("#ffffff", 0.55)
@@ -334,7 +463,8 @@ Panel {
                 logo: "Random logo style (R)",
                 effects: "Random screensaver effect (R)",
                 images: "Random GIF from the library (R)",
-                text: "Random style for your text (R)"
+                text: "Random style for your text (R)",
+                create: "Random animation for your drawing (R)"
               })[root.tab] || "Surprise me (R)"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -711,6 +841,167 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onChanged: function(v) { if (root.ready) root.oled.setTextStyle(v) }
+            }
+          }
+
+          // Create: paint the OLED directly on the stage above.
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.creating
+
+            Item {
+              width: parent.width
+              height: styleGroup.height
+
+              Text {
+                id: styleLabel
+                anchors.verticalCenter: parent.verticalCenter
+                width: brushLabel.implicitWidth
+                textFormat: Text.PlainText
+                text: "Style"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              ButtonGroup {
+                id: styleGroup
+                anchors.left: styleLabel.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                options: [
+                  { value: "static", label: "Still" },
+                  { value: "typewriter", label: "Typewriter" },
+                  { value: "spin", label: "Spin" },
+                  { value: "waves", label: "Waves" }
+                ]
+                value: root.ready ? root.oled.drawStyle : "typewriter"
+                fontSize: Style.font.bodySmall
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(v) { if (root.ready) root.oled.setDrawStyle(v) }
+              }
+            }
+
+            ButtonGroup {
+              width: parent.width
+              options: root.drawTools
+              value: root.drawTool
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { root.drawTool = v }
+            }
+
+            Item {
+              width: parent.width
+              height: brushGroup.height
+
+              Text {
+                id: brushLabel
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "Brush"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              ButtonGroup {
+                id: brushGroup
+                anchors.left: brushLabel.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                options: root.brushSizes.map(function(n) { return { value: String(n), label: n + " px" } })
+                value: String(root.brush)
+                fontSize: Style.font.bodySmall
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(v) { root.brush = Number(v) }
+              }
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Button {
+                iconText: ""
+                text: "Undo"
+                tooltipText: "Undo the last stroke (Z)"
+                bordered: true
+                enabled: root.ready && root.oled.drawUndoStack.length > 0
+                opacity: enabled ? 1 : 0.4
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.oled.drawUndo()
+              }
+
+              Button {
+                iconText: ""
+                text: "Clear"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready) root.oled.drawFillAll(false)
+              }
+
+              Button {
+                iconText: ""
+                text: "Fill"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready) root.oled.drawFillAll(true)
+              }
+
+              Button {
+                iconText: ""
+                text: "Flip"
+                tooltipText: "Swap lit and dark pixels in the drawing"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready) root.oled.drawFlip()
+              }
+
+              Button {
+                iconText: ""
+                text: root.ready && root.oled.drawFromBusy ? "Copying…" : "Copy screen"
+                tooltipText: "Start from what's on the OLED: the wordmark, your text or image"
+                bordered: true
+                visible: root.ready && !root.oled.isDraw
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: if (root.ready) root.oled.drawFromScreen()
+              }
+
+              Button {
+                iconText: ""
+                text: "Show"
+                tooltipText: "Put your drawing on the OLED"
+                bordered: true
+                visible: root.ready && root.oled.hasDrawing && !root.oled.isDraw
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.oled.showDrawing()
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: {
+                if (!root.ready) return ""
+                if (root.oled.drawRenderBusy) return "Animating…"
+                var tip = " Right-click erases; scroll changes the brush; hover the screen to edit."
+                if (!root.oled.drawAnimated) return "Still: strokes land on the keyboard as you draw." + tip
+                return "Separate shapes animate like the letters of the logo, a moment after you stop drawing." + tip
+              }
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
             }
           }
 

@@ -24,6 +24,32 @@ Item {
   // screensaver); "screensaver:<effect>" loops just that one.
   readonly property bool isScreensaver: isScreensaverPreset(preset)
   readonly property bool isText: preset === "text"
+  readonly property bool isDraw: preset === "draw"
+
+  // Create tab: a 128x40 1-bit drawing, painted in the panel and streamed
+  // live. Pixels live here (not in the panel) so the drawing survives the
+  // panel closing; drawRev bumps on every change since in-place array edits
+  // don't notify bindings. apply.py --watch --live picks up drawFile edits.
+  readonly property int oledW: 128
+  readonly property int oledH: 40
+  property var drawPixels: blankPixels()
+  property int drawRev: 0
+  property bool hasDrawing: false
+  property var drawUndoStack: []
+  property var strokeBase: null
+  property bool drawFromBusy: false
+  property bool drawDirReady: false
+  // Same treatments as the wordmark/text. "static" streams the canvas live;
+  // the others are rendered to draw.frames a moment after you stop drawing.
+  property string drawStyle: "typewriter"
+  readonly property var drawStyleOrder: ["static", "typewriter", "spin", "waves"]
+  readonly property bool drawAnimated: drawStyle !== "static"
+  property int drawDelayMs: 100
+  property int drawPreviewRev: 0
+  property int pendingDrawRev: 0
+  property bool drawPreviewStale: true
+  property bool drawRenderBusy: false
+  property bool drawRenderQueued: false
 
   // Custom typed text, rendered with the same typewriter/static/spin/waves
   // styles as the bundled Omarchy wordmark (see apply.py's render_text()).
@@ -162,6 +188,10 @@ Item {
   readonly property string textFrames: customDir + "/text.frames"
   readonly property string textRest: customDir + "/text.bin"
   readonly property string textPreview: customDir + "/text-preview-" + textPreviewRev + ".gif"
+  readonly property string drawFile: customDir + "/drawing.hex"
+  readonly property string drawFramesPath: customDir + "/draw.frames"
+  readonly property string drawBinPath: customDir + "/draw.bin"
+  readonly property string drawPreview: customDir + "/draw-preview-" + drawPreviewRev + ".gif"
 
   readonly property string pluginDir: {
     var url = String(Qt.resolvedUrl("."))
@@ -253,6 +283,7 @@ Item {
     else if (isWaves) path = wavesPreview
     else if (isScreensaver) path = screensaverDir + "/" + (preset === "screensaver" ? "decrypt" : preset.slice(12)) + ".gif"
     else if (isText) path = textPreview
+    else if (isDraw) return drawAnimated ? "file://" + drawPreview : ""
     return "file://" + path
   }
   readonly property string statusLabel: {
@@ -291,6 +322,11 @@ Item {
     } else if (isText) {
       cmd.push("--frames", textFrames)
       cmd.push("--rest", textRest)
+    } else if (isDraw && drawAnimated) {
+      cmd.push("--frames", drawFramesPath)
+      cmd.push("--rest", drawBinPath)
+    } else if (isDraw) {
+      cmd.push("--live", drawFile)
     }
     return cmd
   }
@@ -474,7 +510,7 @@ Item {
   }
 
   function setPreset(name) {
-    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom")
+    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom" && name !== "draw")
       name = "omarchy"
     preset = name
     if (name === "spin") {
@@ -495,6 +531,9 @@ Item {
     } else if (name === "text") {
       sourceLabel = customText || "Text"
       delayMs = textDelayMs
+    } else if (name === "draw") {
+      sourceLabel = "Your drawing"
+      delayMs = drawAnimated ? drawDelayMs : 100
     }
     lastError = ""
     if (settingsLoaded) scheduleSave()
@@ -531,6 +570,14 @@ Item {
       if (style === null) return
       if (isText) setTextStyle(style)
       else _renderText(customText, style, textFont)
+    } else if (scope === "create") {
+      if (!hasDrawing) return
+      for (i = 0; i < drawStyleOrder.length; i++)
+        if (!(isDraw && drawStyleOrder[i] === drawStyle)) pool.push(drawStyleOrder[i])
+      var drawPick = pick(pool)
+      if (drawPick === null) return
+      if (drawPick === drawStyle) showDrawing()
+      else setDrawStyle(drawPick)
     } else if (scope === "effects") {
       for (i = 0; i < screensaverEffects.length; i++)
         if (preset !== "screensaver:" + screensaverEffects[i]) pool.push("screensaver:" + screensaverEffects[i])
@@ -554,6 +601,183 @@ Item {
     if (sourceLabel === "" || sourceLabel === "Omarchy" || sourceLabel === "Static" || sourceLabel === "Spin" || sourceLabel.indexOf("Screensaver") === 0)
       sourceLabel = "Custom"
     setPreset("custom")
+  }
+
+  function blankPixels() {
+    var out = new Array(oledW * oledH)
+    for (var i = 0; i < out.length; i++) out[i] = 0
+    return out
+  }
+
+  function pixelsToHex(pix) {
+    var digits = "0123456789abcdef"
+    var out = ""
+    for (var b = 0; b < pix.length; b += 8) {
+      var v = 0
+      for (var k = 0; k < 8; k++) v = (v << 1) | (pix[b + k] ? 1 : 0)
+      out += digits.charAt(v >> 4) + digits.charAt(v & 15)
+    }
+    return out
+  }
+
+  function hexToPixels(hex) {
+    hex = String(hex || "").trim()
+    if (!/^[0-9a-fA-F]{1280}$/.test(hex)) return null
+    var out = blankPixels()
+    for (var i = 0; i < 640; i++) {
+      var v = parseInt(hex.substr(i * 2, 2), 16)
+      for (var k = 0; k < 8; k++) out[i * 8 + k] = (v >> (7 - k)) & 1
+    }
+    return out
+  }
+
+  // Every edit: repaint, persist (which is also how the live helper hears
+  // about it), and make sure the OLED is actually showing the drawing.
+  function drawChanged() {
+    hasDrawing = true
+    drawRev++
+    drawSaveTimer.start()
+    if (!drawAnimated) {
+      if (!isDraw) setPreset("draw")
+      return
+    }
+    drawPreviewStale = true
+    drawRenderTimer.restart()
+  }
+
+  function renderDrawing() {
+    if (!hasDrawing || pluginDir === "") return
+    if (drawRenderProcess.running) {
+      drawRenderQueued = true
+      return
+    }
+    drawRenderBusy = true
+    pendingDrawRev = drawPreviewRev + 1
+    drawRenderProcess.command = [
+      "python3", "-u", helper, "--render-drawing", pixelsToHex(drawPixels),
+      "--style", drawStyle,
+      "--out-dir", customDir,
+      "--preview-suffix", String(pendingDrawRev)
+    ]
+    drawRenderProcess.running = true
+  }
+
+  function setDrawStyle(style) {
+    if (drawStyleOrder.indexOf(style) === -1 || style === drawStyle) return
+    drawStyle = style
+    if (settingsLoaded) scheduleSave()
+    if (!hasDrawing) return
+    if (!drawAnimated) {
+      setPreset("draw")
+      return
+    }
+    drawPreviewStale = true
+    drawRenderTimer.stop()
+    renderDrawing()
+  }
+
+  function pushUndo() {
+    var stack = drawUndoStack
+    stack.push(drawPixels.slice())
+    if (stack.length > 40) stack.shift()
+    drawUndoStack = stack
+  }
+
+  // A stroke starts here: snapshot for undo, and as the base a line preview
+  // redraws from while it's being dragged.
+  function beginStroke() {
+    pushUndo()
+    strokeBase = drawPixels.slice()
+  }
+
+  function endStroke() {
+    strokeBase = null
+  }
+
+  function stamp(x, y, on, size) {
+    var r0 = -Math.floor((size - 1) / 2)
+    for (var dy = r0; dy < r0 + size; dy++) {
+      var yy = y + dy
+      if (yy < 0 || yy >= oledH) continue
+      for (var dx = r0; dx < r0 + size; dx++) {
+        var xx = x + dx
+        if (xx >= 0 && xx < oledW) drawPixels[yy * oledW + xx] = on ? 1 : 0
+      }
+    }
+  }
+
+  function plotLine(x0, y0, x1, y1, on, size) {
+    var dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1
+    var dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1
+    var err = dx + dy
+    for (var guard = 0; guard < 512; guard++) {
+      stamp(x0, y0, on, size)
+      if (x0 === x1 && y0 === y1) break
+      var e2 = 2 * err
+      if (e2 >= dy) { err += dy; x0 += sx }
+      if (e2 <= dx) { err += dx; y0 += sy }
+    }
+  }
+
+  function paintSegment(x0, y0, x1, y1, on, size) {
+    plotLine(x0, y0, x1, y1, on, size)
+    drawChanged()
+  }
+
+  // Straight line from the stroke's start, redrawn over the stroke base on
+  // every drag step so only the final position sticks.
+  function previewLine(x0, y0, x1, y1, on, size) {
+    if (strokeBase) drawPixels = strokeBase.slice()
+    plotLine(x0, y0, x1, y1, on, size)
+    drawChanged()
+  }
+
+  function previewRect(x0, y0, x1, y1, on, size) {
+    if (strokeBase) drawPixels = strokeBase.slice()
+    plotLine(x0, y0, x1, y0, on, size)
+    plotLine(x1, y0, x1, y1, on, size)
+    plotLine(x1, y1, x0, y1, on, size)
+    plotLine(x0, y1, x0, y0, on, size)
+    drawChanged()
+  }
+
+  function drawFillAll(on) {
+    pushUndo()
+    for (var i = 0; i < drawPixels.length; i++) drawPixels[i] = on ? 1 : 0
+    drawChanged()
+  }
+
+  function drawFlip() {
+    pushUndo()
+    for (var i = 0; i < drawPixels.length; i++) drawPixels[i] = drawPixels[i] ? 0 : 1
+    drawChanged()
+  }
+
+  function drawUndo() {
+    if (drawUndoStack.length === 0) return
+    var stack = drawUndoStack
+    drawPixels = stack.pop()
+    drawUndoStack = stack
+    drawChanged()
+  }
+
+  // Seed the canvas with the first frame of whatever is showing now, so you
+  // can draw over the wordmark, your text, or an imported image.
+  function drawFromScreen() {
+    if (drawFromProcess.running || pluginDir === "") return
+    var src = bundledRest
+    if (isCustom) src = customRest
+    else if (isText) src = textRest
+    else if (isDraw) return
+    drawFromBusy = true
+    drawFromProcess.command = ["python3", "-u", helper, "--hex", src]
+    drawFromProcess.running = true
+  }
+
+  function showDrawing() {
+    if (isDraw) return
+    if (drawAnimated && drawPreviewStale) renderDrawing()
+    else setPreset("draw")
   }
 
   function setInvert(on) {
@@ -684,6 +908,9 @@ Item {
     var inv = false
     var sync = true
     var sleepMin = 10
+    var dStyle = "typewriter"
+    var dDelay = 100
+    var dRev = 0
     var thr = 50
     var delay = 100
     var srcFile = ""
@@ -704,9 +931,13 @@ Item {
         else if (obj && obj.source === "waves") nextPreset = "waves"
         else if (obj && isScreensaverPreset(obj.source)) nextPreset = String(obj.source)
         else if (obj && obj.source === "text") nextPreset = "text"
+        else if (obj && obj.source === "draw") nextPreset = "draw"
         if (obj && obj.label) label = String(obj.label)
         if (obj && obj.invert === true) inv = true
         if (obj && obj.idleSync === false) sync = false
+        if (obj && obj.drawStyle && drawStyleOrder.indexOf(String(obj.drawStyle)) !== -1) dStyle = String(obj.drawStyle)
+        if (obj && obj.drawDelayMs !== undefined) dDelay = Math.max(50, Math.min(500, Math.round(Number(obj.drawDelayMs))))
+        if (obj && obj.drawPreviewRev !== undefined) dRev = Math.max(0, Math.round(Number(obj.drawPreviewRev)))
         if (obj && obj.sleepMinutes !== undefined && sleepOptions.indexOf(Math.round(Number(obj.sleepMinutes))) !== -1)
           sleepMin = Math.round(Number(obj.sleepMinutes))
         if (obj && obj.threshold !== undefined) thr = Math.max(5, Math.min(95, Math.round(Number(obj.threshold))))
@@ -724,6 +955,10 @@ Item {
     invert = inv
     idleSync = sync
     sleepMinutes = sleepMin
+    drawStyle = dStyle
+    drawDelayMs = dDelay
+    drawPreviewRev = dRev
+    drawPreviewStale = dRev === 0
     threshold = thr
     delayMs = delay
     sourceFile = srcFile
@@ -741,6 +976,7 @@ Item {
     else if (nextPreset === "static") sourceLabel = "Static"
     else if (nextPreset === "custom") sourceLabel = label || "Custom"
     else if (nextPreset === "text") sourceLabel = txt || "Text"
+    else if (nextPreset === "draw") sourceLabel = "Your drawing"
     else sourceLabel = "Omarchy"
     settingsLoaded = true
     setEnabled(on)
@@ -760,6 +996,9 @@ Item {
       invert: invert,
       idleSync: idleSync,
       sleepMinutes: sleepMinutes,
+      drawStyle: drawStyle,
+      drawDelayMs: drawDelayMs,
+      drawPreviewRev: drawPreviewRev,
       threshold: threshold,
       delayMs: delayMs,
       sourceFile: sourceFile,
@@ -791,6 +1030,97 @@ Item {
     printErrors: false
     onLoaded: root.hasCustom = true
     onLoadFailed: root.hasCustom = false
+  }
+
+  FileView {
+    id: drawFileView
+    path: root.drawFile
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      var pix = root.hexToPixels(text())
+      if (!pix) return
+      root.drawPixels = pix
+      root.hasDrawing = true
+      root.drawRev++
+    }
+  }
+
+  // Animated styles re-render once you pause, not on every pixel.
+  Timer {
+    id: drawRenderTimer
+    interval: 600
+    repeat: false
+    onTriggered: root.renderDrawing()
+  }
+
+  Process {
+    id: drawRenderProcess
+    running: false
+    stdout: StdioCollector { id: drawRenderOut; waitForEnd: true }
+    stderr: StdioCollector { id: drawRenderErr; waitForEnd: true }
+    onExited: function(code) {
+      root.drawRenderBusy = false
+      if (root.drawRenderQueued) {
+        root.drawRenderQueued = false
+        root.renderDrawing()
+        return
+      }
+      if (code !== 0) {
+        var err = root.boundedCollectorText(drawRenderErr).trim()
+        root.lastError = (err !== "" ? err : "Could not animate the drawing").slice(0, 200)
+        return
+      }
+      var msg = null
+      try { msg = JSON.parse(root.boundedCollectorText(drawRenderOut).trim()) } catch (e) {}
+      if (msg && msg.delay_ms)
+        root.drawDelayMs = Math.max(50, Math.min(500, Math.round(Number(msg.delay_ms))))
+      root.drawPreviewRev = root.pendingDrawRev
+      root.drawPreviewStale = false
+      root.lastError = ""
+      root.setPreset("draw")
+    }
+  }
+
+  // Coalesce a drag's worth of edits into ~25 writes a second.
+  Timer {
+    id: drawSaveTimer
+    interval: 40
+    repeat: false
+    onTriggered: {
+      if (root.customDir === "") return
+      if (root.drawDirReady) drawFileView.setText(root.pixelsToHex(root.drawPixels) + "\n")
+      else if (!drawDirMaker.running) drawDirMaker.running = true
+    }
+  }
+
+  // The state dir may not exist yet on a fresh install (apply.py creates it
+  // 0700 for imports); FileView won't create parent directories.
+  Process {
+    id: drawDirMaker
+    command: ["mkdir", "-p", "-m", "700", root.customDir]
+    onExited: function(code) {
+      root.drawDirReady = code === 0
+      if (root.drawDirReady) drawFileView.setText(root.pixelsToHex(root.drawPixels) + "\n")
+    }
+  }
+
+  Process {
+    id: drawFromProcess
+    running: false
+    stdout: StdioCollector { id: drawFromOut; waitForEnd: true }
+    onExited: function(code) {
+      root.drawFromBusy = false
+      var pix = code === 0 ? root.hexToPixels(root.boundedCollectorText(drawFromOut)) : null
+      if (!pix) {
+        root.lastError = "Could not copy the screen"
+        return
+      }
+      root.pushUndo()
+      root.drawPixels = pix
+      root.drawChanged()
+    }
   }
 
   FileView {

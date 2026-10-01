@@ -21,7 +21,7 @@ running. Turning Display off (or `apply.py --release`) blanks the panel.
 ## Gallery
 
 The bar panel: a live, pixel-exact copy of the keyboard's screen up top, then
-Logo · Effects · Images · Text tabs. Here **Surprise me** hops through
+Logo · Effects · Images · Text · Create tabs. Here **Surprise me** hops through
 screensaver effects, with a quick flip of **Invert** in the middle
 ([MP4](media/panel-demo.mp4)):
 
@@ -144,6 +144,14 @@ Left click the bar icon to open the panel.
 - **Text** tab: type your own text (rendered in Omarchy Block, caps only)
   and pick a **style** (typewriter/static/spin/waves). **Show** switches the
   OLED to it.
+- **Create** tab: draw your own 128×40 screen right on the preview. **Pen**,
+  **Erase**, **Line** and **Box** tools, 1–5 px brushes (scroll on the screen
+  to change size), right-click to erase, **Undo** (or Z), **Clear**, **Fill**,
+  **Flip**, and **Copy screen** to start from the wordmark, your text or an
+  image. Give it the logo's treatments: **Still** (updates the keyboard as
+  you draw), **Typewriter**, **Spin** or **Waves**. Separate shapes animate
+  like the logo's letters. Animated styles re-render a moment after you
+  stop drawing; hover the screen to edit, move away to watch the loop.
 - **Follow screensaver**: while Omarchy's idle screensaver is up, the OLED
   plays the screensaver effects too, then goes back to whatever it was showing.
 - **Sleep when idle**: Never, 5, 10 (default), 30 or 60 minutes. After that
@@ -184,6 +192,10 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --i
 
 # Blank the panel
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --release
+
+# Animate a 128x40 bitmap given as 1280 hex chars (row-major, MSB first)
+python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
+  --render-drawing "$(cat drawing.hex)" --style spin
 
 # Render typed text (style: typewriter/static/spin/waves)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \

@@ -30,6 +30,9 @@ FRAMES_PATH = os.path.join(HERE, "assets", "omarchy-oled-128x40.frames")
 FRAMES_MAGIC = b"OLEDGIF1"
 POLL_SECONDS = 2.0
 STILL_RESEND_S = 0.5
+# --live: how often to check the drawing file the panel's Create tab writes.
+LIVE_TICK_S = 0.04
+LIVE_MAX_BYTES = 4096
 DEFAULT_DELAY_S = 0.10
 OLED_W, OLED_H = 128, 40
 MAX_IMPORT_BYTES = 40 * 1024 * 1024
@@ -307,6 +310,55 @@ def render_text_bitmap(text: str, font: str) -> bytes:
     return blob
 
 
+def animate_bitmap(blob: bytes, style: str) -> tuple[list[bytes], int]:
+    """The wordmark's typewriter/static/spin/waves treatments, applied to any
+    128x40 bitmap. make_gif splits the ink into column runs and animates each
+    run like a letter, so separate shapes in a drawing move independently."""
+    import make_gif
+
+    pix = make_gif.unpack(blob)
+    letters = make_gif.segment_letters(pix)
+    if style == "spin":
+        return make_gif.build_spin(pix, letters), 70
+    if style == "waves":
+        return make_gif.build_waves(pix, letters), 60
+    if style == "static":
+        return [make_gif.pack(pix)], 100
+    cursor_rows = make_gif.ink_row_bounds(pix)
+    return make_gif.build_frames(pix, letters, cursor_rows), 100
+
+
+def render_drawing(
+    hex_text: str,
+    style: str,
+    out_dir: str,
+    preview_suffix: str | None = None,
+) -> dict[str, object]:
+    """Animate a Create-tab drawing (1280 hex chars) into draw.frames."""
+    if style not in TEXT_STYLES:
+        style = "typewriter"
+    try:
+        blob = bytes.fromhex(hex_text.strip())
+    except ValueError:
+        raise SystemExit("bad drawing")
+    if len(blob) != PAYLOAD_BYTES:
+        raise SystemExit("bad drawing")
+    frames, delay_ms = animate_bitmap(blob, style)
+    ensure_private_dir(out_dir)
+    preview_png, preview_gif = preview_paths(out_dir, "draw-preview", preview_suffix)
+    with open(os.path.join(out_dir, "draw.frames"), "wb") as fh:
+        fh.write(FRAMES_MAGIC + struct.pack("<HH", len(frames), delay_ms) + b"".join(frames))
+    with open(os.path.join(out_dir, "draw.bin"), "wb") as fh:
+        fh.write(blob)
+    magick = shutil.which("magick")
+    if magick is None:
+        raise SystemExit("ImageMagick (magick) is required to preview drawings")
+    write_preview(frames, delay_ms, preview_png, preview_gif, magick)
+    result = {"type": "drawing", "style": style, "frames": len(frames), "delay_ms": delay_ms}
+    print(json.dumps(result, separators=(",", ":")), flush=True)
+    return result
+
+
 def render_text(
     text: str,
     style: str,
@@ -314,28 +366,12 @@ def render_text(
     font: str = DEFAULT_TEXT_FONT,
     preview_suffix: str | None = None,
 ) -> dict[str, object]:
-    import make_gif
-
     if style not in TEXT_STYLES:
         style = "typewriter"
     if font not in TEXT_FONTS:
         font = DEFAULT_TEXT_FONT
     blob = render_text_bitmap(text, font)
-    pix = make_gif.unpack(blob)
-    letters = make_gif.segment_letters(pix)
-    if style == "spin":
-        frames = make_gif.build_spin(pix, letters)
-        delay_ms = 70
-    elif style == "waves":
-        frames = make_gif.build_waves(pix, letters)
-        delay_ms = 60
-    elif style == "static":
-        frames = [make_gif.pack(pix)]
-        delay_ms = 100
-    else:
-        cursor_rows = make_gif.ink_row_bounds(pix)
-        frames = make_gif.build_frames(pix, letters, cursor_rows)
-        delay_ms = 100
+    frames, delay_ms = animate_bitmap(blob, style)
 
     ensure_private_dir(out_dir)
     frames_path = os.path.join(out_dir, "text.frames")
@@ -550,7 +586,49 @@ def emit(state: str, **fields: object) -> None:
     print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
-def watch(frames: list[bytes], delay_s: float) -> None:
+def file_sig(path: str) -> tuple[int, int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def load_live(path: str, invert: bool) -> bytes | None:
+    """One frame as 1280 hex chars (row-major, MSB-first, like the .bin
+    files). Anything else is ignored so a half-written file is harmless."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(LIVE_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > LIVE_MAX_BYTES:
+        return None
+    try:
+        payload = bytes.fromhex(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if len(payload) != PAYLOAD_BYTES:
+        return None
+    return invert_payload(payload) if invert else payload
+
+
+def frame_hex(path: str) -> str:
+    """First frame of a .bin or .frames file as hex, for seeding a drawing."""
+    blob = open(path, "rb").read(PAYLOAD_BYTES + 12 + 1)
+    if blob[:8] == FRAMES_MAGIC:
+        blob = blob[12 : 12 + PAYLOAD_BYTES]
+    if len(blob) < PAYLOAD_BYTES:
+        raise SystemExit(f"no {PAYLOAD_BYTES}-byte frame in {path}")
+    return blob[:PAYLOAD_BYTES].hex()
+
+
+def watch(
+    frames: list[bytes],
+    delay_s: float,
+    live_path: str | None = None,
+    invert: bool = False,
+) -> None:
     # The shell doesn't always take its children with it (omarchy-restart-shell
     # leaves them reparented to the user manager), and an orphan keeps
     # streaming its old preset interleaved with the new shell's. Bail out as
@@ -558,8 +636,13 @@ def watch(frames: list[bytes], delay_s: float) -> None:
     parent = os.getppid()
     # A still only needs re-sending often enough to win the panel back from
     # the firmware's own overlays (volume, media keys), not at full frame rate.
-    if len(set(frames)) == 1:
-        delay_s = max(delay_s, STILL_RESEND_S)
+    # In --live mode we tick fast to notice edits, but still only resend an
+    # unchanged frame at that slower rate.
+    still = len(set(frames)) == 1
+    tick = LIVE_TICK_S if live_path else (max(delay_s, STILL_RESEND_S) if still else delay_s)
+    live_sig: tuple[int, int, int] | None = None
+    dirty = True
+    last_send = 0.0
     last = None
     denied: set[str] = set()
     fd: int | None = None
@@ -597,10 +680,22 @@ def watch(frames: list[bytes], delay_s: float) -> None:
                     except OSError as exc:
                         emit("error", path=path, message=str(exc))
                         last = None
-        if fd is not None:
+        if live_path is not None:
+            sig = file_sig(live_path)
+            if sig != live_sig:
+                live_sig = sig
+                payload = load_live(live_path, invert)
+                if payload is not None and payload != frames[0]:
+                    frames = [payload]
+                    dirty = True
+        if fd is not None and (
+            dirty or not still or time.monotonic() - last_send >= STILL_RESEND_S - 0.005
+        ):
             try:
                 send_feature_fd(fd, frames[idx % len(frames)])
                 idx += 1
+                dirty = False
+                last_send = time.monotonic()
             except OSError as exc:
                 # A vanished node is just an unplug; the rescan reports it.
                 if path is not None and os.path.exists(path):
@@ -611,13 +706,15 @@ def watch(frames: list[bytes], delay_s: float) -> None:
                     pass
                 fd = None
                 last = None
+                dirty = True
         if fd is None:
             time.sleep(POLL_SECONDS)
             next_frame = time.monotonic()
+            dirty = True
             continue
         # Hold a steady frame clock rather than sleeping a full delay after
         # each variable-length USB write, and never burst to catch up.
-        next_frame += delay_s
+        next_frame += tick
         wait = next_frame - time.monotonic()
         if wait < 0:
             next_frame = time.monotonic()
@@ -648,6 +745,16 @@ def main() -> None:
     render_text_opt = take_opt(args, "--render-text")
     style_opt = take_opt(args, "--style")
     font_opt = take_opt(args, "--font")
+    live_opt = take_opt(args, "--live")
+    hex_opt = take_opt(args, "--hex")
+    render_drawing_opt = take_opt(args, "--render-drawing")
+    if render_drawing_opt is not None:
+        default_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "omarchy", "steelseries-oled")
+        render_drawing(render_drawing_opt, style_opt or "typewriter", out_dir or default_dir, preview_suffix_opt)
+        return
+    if hex_opt is not None:
+        print(frame_hex(hex_opt), flush=True)
+        return
     if release_mode:
         try:
             path = apply_once(bytes(PAYLOAD_BYTES), args[0] if args else None)
@@ -681,6 +788,11 @@ def main() -> None:
     delay_override = clamp_int(delay_opt, 50, 500, 0) if delay_opt is not None else None
     if delay_override == 0:
         delay_override = None
+    if live_opt is not None:
+        if not watch_mode:
+            raise SystemExit("--live needs --watch")
+        watch([load_live(live_opt, invert) or bytes(PAYLOAD_BYTES)], DEFAULT_DELAY_S, live_opt, invert)
+        return
     rest = load_static(invert, rest_path)
     frames, delay_s = load_frames(invert, frames_paths[0] if frames_paths else None, delay_override)
     for extra in frames_paths[1:]:
