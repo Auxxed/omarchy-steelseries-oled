@@ -136,7 +136,6 @@ Item {
     { file: "U8V5hMB.gif", name: "Crescent Orbit" },
     { file: "JQxBkTD.gif", name: "Dot People" },
     { file: "SjK1UNF.gif", name: "Error Glitch" },
-    { file: "v5Infnc.gif", name: "F*** You" },
     { file: "62LWpGW.gif", name: "Fish Chase" },
     { file: "OrHjqAB.gif", name: "Gone" },
     { file: "2XENnwN.gif", name: "Google It" },
@@ -303,7 +302,7 @@ Item {
   }
 
   function watchCommand() {
-    var cmd = ["python3", "-u", helper, "--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)]
+    var cmd = ["/usr/bin/python3", "-u", helper, "--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)]
     if (invert) cmd.push("--invert")
     if (idleSyncActive || preset === "screensaver") {
       var effects = shuffledEffects()
@@ -338,7 +337,7 @@ Item {
   }
 
   function restCommand() {
-    return ["python3", "-u", helper, "--release"]
+    return ["/usr/bin/python3", "-u", helper, "--release"]
   }
 
   function setEnabled(on) {
@@ -373,6 +372,7 @@ Item {
 
   function launchWatch() {
     restartQueued = false
+    restartTimer.startedAt = Date.now()
     state = "starting"
     watchProcess.command = watchCommand()
     watchProcess.running = true
@@ -419,7 +419,7 @@ Item {
     lastError = ""
     importBusy = true
     importProcess.command = [
-      "python3", "-u", helper, "--import", path,
+      "/usr/bin/python3", "-u", helper, "--import", path,
       "--out-dir", customDir,
       "--threshold", String(threshold),
       "--preview-suffix", String(pendingPreviewSuffix)
@@ -434,7 +434,7 @@ Item {
     pendingPreviewSuffix = customPreviewRev + 1
     lastError = ""
     importBusy = true
-    var cmd = ["python3", "-u", helper]
+    var cmd = ["/usr/bin/python3", "-u", helper]
     if (item.path) cmd.push("--import", item.path)
     else cmd.push("--import-url", "https://www.nlog.us/content/steelseries/" + item.file)
     cmd.push("--out-dir", customDir, "--threshold", String(threshold), "--label", item.name)
@@ -462,7 +462,7 @@ Item {
     lastError = ""
     importBusy = true
     importProcess.command = [
-      "python3", "-u", helper, "--render-text", text,
+      "/usr/bin/python3", "-u", helper, "--render-text", text,
       "--style", style,
       "--font", font,
       "--out-dir", customDir,
@@ -769,7 +769,7 @@ Item {
     drawRenderBusy = true
     pendingDrawRev = drawPreviewRev + 1
     drawRenderProcess.command = [
-      "python3", "-u", helper, "--render-drawing", pixelsToHex(drawPixels),
+      "/usr/bin/python3", "-u", helper, "--render-drawing", pixelsToHex(drawPixels),
       "--style", drawStyle,
       "--out-dir", customDir,
       "--preview-suffix", String(pendingDrawRev)
@@ -886,7 +886,7 @@ Item {
     else if (isText) src = textRest
     else if (isDraw) return
     drawFromBusy = true
-    drawFromProcess.command = ["python3", "-u", helper, "--hex", src]
+    drawFromProcess.command = ["/usr/bin/python3", "-u", helper, "--hex", src]
     drawFromProcess.running = true
   }
 
@@ -993,25 +993,45 @@ Item {
     }
   }
 
+  // Writes the rule as root through pkexec, then re-applies udev to the
+  // keyboard's own hidraw nodes only. A blanket `udevadm trigger` over every
+  // hidraw node re-announces unrelated devices, and a game running under
+  // Proton lost its Steam Controller that way. A change event is enough:
+  // 73-seat-late.rules grants uaccess on every action but remove. Absolute
+  // paths throughout, so nothing on the user's PATH runs as root.
   function installUdev() {
     if (udevProcess.running) return
     udevBusy = true
     lastError = ""
     udevProcess.command = [
-      "pkexec", "python3", "-c",
-      "import os, pathlib, subprocess\n"
-        + "rule = bytes.fromhex(" + JSON.stringify(udevRuleHex) + ")\n"
-        + "dest = pathlib.Path('/etc/udev/rules.d/71-steelseries-apex-oled.rules')\n"
-        + "tmp = dest.with_name('.71-steelseries-apex-oled.rules.tmp')\n"
-        + "tmp.write_bytes(rule)\n"
-        + "os.chmod(tmp, 0o644)\n"
-        + "os.replace(tmp, dest)\n"
-        + "for old in ('99-steelseries-apex-oled.rules', '99-steelseries-apex7-oled.rules'):\n"
-        + "    p = pathlib.Path('/etc/udev/rules.d') / old\n"
-        + "    if p.exists(): p.unlink()\n"
-        + "subprocess.check_call(['udevadm', 'control', '--reload-rules'])\n"
-        + "subprocess.check_call(['udevadm', 'trigger', '--action=add', '--subsystem-match=hidraw'])\n"
-        + "subprocess.check_call(['udevadm', 'trigger', '--action=change', '--subsystem-match=hidraw'])\n"
+      "/usr/bin/pkexec", "/usr/bin/python3", "-I", "-S", "-c", [
+        "import glob, os, re, subprocess, tempfile",
+        "rule = bytes.fromhex(" + JSON.stringify(udevRuleHex) + ")",
+        "rules = '/etc/udev/rules.d'",
+        "fd, tmp = tempfile.mkstemp(dir=rules, prefix='.71-steelseries-apex-oled.rules.')",
+        "try:",
+        "    os.fchmod(fd, 0o644)",
+        "    os.write(fd, rule)",
+        "    os.fsync(fd)",
+        "finally:",
+        "    os.close(fd)",
+        "os.replace(tmp, rules + '/71-steelseries-apex-oled.rules')",
+        "for old in ('99-steelseries-apex-oled.rules', '99-steelseries-apex7-oled.rules'):",
+        "    p = os.path.join(rules, old)",
+        "    if os.path.lexists(p): os.unlink(p)",
+        "subprocess.check_call(['/usr/bin/udevadm', 'control', '--reload-rules'])",
+        "ids = {'00001038:0000' + pid for pid in ('1610', '1612', '1614', '1618', '161C')}",
+        "for node in sorted(glob.glob('/sys/class/hidraw/hidraw*')):",
+        "    try:",
+        "        with open(node + '/device/uevent', encoding='ascii', errors='replace') as f:",
+        "            uevent = f.read(4096)",
+        "    except OSError:",
+        "        continue",
+        "    m = re.search(r'^HID_ID=[0-9A-F]{4}:([0-9A-F]{8}:[0-9A-F]{8})$', uevent, re.M)",
+        "    if m and m.group(1) in ids:",
+        "        subprocess.check_call(['/usr/bin/udevadm', 'trigger', '--action=change', '--', node])",
+        ""
+      ].join("\n")
     ]
     udevProcess.running = true
   }
@@ -1303,7 +1323,14 @@ Item {
     onExited: {
       if (root.restartQueued) root.launchWatch()
       else if (root.releaseQueued) root.runRelease()
-      else if (!root.stopping && root.enabled && !root.sleeping) restartTimer.restart()
+      else if (!root.stopping && root.enabled && !root.sleeping) {
+        // apply.py waits for the keyboard itself, so an exit here is a crash.
+        // One that keeps crashing within a minute waits twice as long each
+        // time (5 s up to 5 min) instead of respawning every 5 s forever.
+        var quick = Date.now() - restartTimer.startedAt < 60000
+        restartTimer.interval = quick ? Math.min(restartTimer.interval * 2, 300000) : 5000
+        restartTimer.restart()
+      }
     }
   }
 
@@ -1411,6 +1438,7 @@ Item {
 
   Timer {
     id: restartTimer
+    property real startedAt: 0
     interval: 5000
     repeat: false
     onTriggered: root.startWatch()

@@ -27,7 +27,7 @@ Panel {
   readonly property var tabs: [
     { value: "logo", label: "Logo" },
     { value: "effects", label: "Effects" },
-    { value: "images", label: "Images" },
+    { value: "images", label: "GIFs" },
     { value: "text", label: "Text" },
     { value: "create", label: "Create" }
   ]
@@ -566,17 +566,23 @@ Panel {
             Flickable {
               id: effectScroll
               width: parent.width
-              height: Math.min(effectFlow.implicitHeight, Style.space(200))
+              // Whole rows, plus half of the next as the cue that it scrolls.
+              readonly property real rowStep: effectFlow.children.length > 1 ? effectFlow.children[0].height + effectFlow.spacing : 1
+              height: Math.min(effectFlow.implicitHeight, rowStep * 5.5)
               contentWidth: width
               contentHeight: effectFlow.implicitHeight
               clip: true
               boundsBehavior: Flickable.StopAtBounds
               interactive: contentHeight > height
 
-              Flow {
+              // A three-column grid of equal cells reads as a list to pick
+              // from; free-width pills wrapped into a ragged wall.
+              Grid {
                 id: effectFlow
                 width: effectScroll.width
+                columns: 3
                 spacing: Style.space(5)
+                readonly property real cell: (width - spacing * (columns - 1)) / columns
 
                 Repeater {
                   model: {
@@ -592,6 +598,7 @@ Panel {
                   }
                   delegate: Button {
                     required property var modelData
+                    width: effectFlow.cell
                     text: root.oled.effectLabel(modelData)
                     selected: root.ready && root.oled.preset === "screensaver:" + modelData
                     bordered: true
@@ -622,7 +629,7 @@ Panel {
             visible: root.tab === "images"
 
             PanelSectionHeader {
-              text: "GIF LIBRARY"
+              text: "LIBRARY"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -631,42 +638,34 @@ Panel {
               width: parent.width
               spacing: Style.space(6)
 
+              // No Next button: Surprise me (R) above already picks another.
               TextField {
                 id: gifFilter
-                width: parent.width - nextGifButton.width - parent.spacing
+                width: parent.width
                 placeholderText: "Search " + (root.ready ? root.oled.webGifs.length : "") + " GIFs…"
                 foreground: root.foreground
                 font.family: root.fontFamily
                 Keys.onEscapePressed: text = ""
-              }
-
-              Button {
-                id: nextGifButton
-                iconText: ""
-                text: "Next"
-                tooltipText: "Step to the next GIF in the library"
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                opacity: root.busy ? 0.5 : 1
-                onClicked: if (root.ready && !root.busy) root.oled.fetchWebGif()
               }
             }
 
             Flickable {
               id: gifScroll
               width: parent.width
-              height: Math.min(gifFlow.implicitHeight, Style.space(200))
+              readonly property real rowStep: gifFlow.children.length > 1 ? gifFlow.children[0].height + gifFlow.spacing : 1
+              height: Math.min(gifFlow.implicitHeight, rowStep * 5.5)
               contentWidth: width
               contentHeight: gifFlow.implicitHeight
               clip: true
               boundsBehavior: Flickable.StopAtBounds
               interactive: contentHeight > height
 
-              Flow {
+              Grid {
                 id: gifFlow
                 width: gifScroll.width
+                columns: 3
                 spacing: Style.space(5)
+                readonly property real cell: (width - spacing * (columns - 1)) / columns
 
                 Repeater {
                   model: {
@@ -682,10 +681,13 @@ Panel {
                   }
                   delegate: Button {
                     required property var modelData
+                    width: gifFlow.cell
                     text: modelData.name
-                    iconText: modelData.bundled ? "" : ""
-                    tooltipText: modelData.bundled ? "Ships with the plugin" : "Fetched from nlog.us"
-                    selected: root.ready && root.oled.isCustom && root.oled.webGifIndex === modelData.idx
+                    tooltipText: modelData.bundled ? "Ships with the plugin" : "Fetched from nlog.us when picked"
+                    // The index isn't kept across restarts; the playing GIF's name is.
+                    selected: root.ready && root.oled.isCustom && (root.oled.webGifIndex >= 0
+                      ? root.oled.webGifIndex === modelData.idx
+                      : root.oled.sourceLabel === modelData.name)
                     bordered: true
                     fontSize: Style.font.bodySmall
                     horizontalPadding: Style.space(8)
@@ -1100,21 +1102,14 @@ Panel {
           }
 
           // ── Tuning ────────────────────────────────────────────────
-          Row {
+          Toggle {
             width: parent.width
-            spacing: Style.space(6)
-
-            Button {
-              width: parent.width
-              iconText: ""
-              text: "Follow screensaver"
-              tooltipText: "Play the screensaver effects while Omarchy's screensaver is up"
-              selected: root.ready && root.oled.idleSync
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onClicked: if (root.ready) root.oled.toggleIdleSync()
-            }
+            label: "Follow screensaver"
+            description: "While Omarchy's idle screensaver is up, the OLED plays the same effects, then goes back"
+            checked: root.ready && root.oled.idleSync
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: if (root.ready) root.oled.toggleIdleSync()
           }
 
           Column {

@@ -21,7 +21,7 @@ running. Turning Display off (or `apply.py --release`) blanks the panel.
 ## Gallery
 
 The bar panel: a live, pixel-exact copy of the keyboard's screen up top, then
-Logo · Effects · Images · Text · Create tabs. Here **Surprise me** hops through
+Logo · Effects · GIFs · Text · Create tabs. Here **Surprise me** hops through
 screensaver effects, with a quick flip of **Invert** in the middle
 ([MP4](media/panel-demo.mp4)):
 
@@ -33,7 +33,7 @@ screensaver effects, with a quick flip of **Invert** in the middle
 <td align="center" width="50%"><b>Effects</b><br><img src="media/panel-effects.png" width="300" alt="Effects tab: a searchable grid of all 37 screensaver effects, with Fireworks playing"></td>
 </tr>
 <tr>
-<td align="center" width="50%"><b>Images</b><br><img src="media/panel-images.png" width="300" alt="Images tab: searchable GIF library, Choose image, Last image and the Contrast slider, with Night Runner playing"></td>
+<td align="center" width="50%"><b>GIFs</b><br><img src="media/panel-images.png" width="300" alt="GIFs tab: searchable GIF library, Choose image, Last image and the Contrast slider, with Night Runner playing"></td>
 <td align="center" width="50%"><b>Text</b><br><img src="media/panel-text.png" width="300" alt="Text tab: the text box and style chips, with DrugBust rendered in Omarchy Block"></td>
 </tr>
 </table>
@@ -136,9 +136,10 @@ Left click the bar icon to open the panel.
   which plays all 37 effects shuffled, like the real screensaver.
 - **Effects** tab: a searchable grid of every screensaver effect; click one
   to loop it on its own.
-- **Images** tab: search the GIF library (Stick Fight and Night Runner ship
-  with the plugin, the rest are fetched on demand from nlog.us), step through
-  it with **Next**, **Choose image** to import your own GIF or still
+- **GIFs** tab: search the library, laid out as a grid (Stick Fight and
+  Night Runner ship with the plugin, the rest are fetched on demand from
+  nlog.us; **Surprise me** picks one at random), **Choose image** to import
+  your own GIF or still
   (png/jpg/webp/bmp, resized to 128×40 1-bit), or bring back your **Last
   image**. **Contrast** sets the 1-bit threshold for custom images.
 - **Text** tab: type your own text (rendered in Omarchy Block, caps only)

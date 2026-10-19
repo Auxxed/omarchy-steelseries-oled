@@ -35,6 +35,18 @@ mv -f -T -- "$TMP" "$DEST"
 rm -f /etc/udev/rules.d/99-steelseries-apex-oled.rules \
       /etc/udev/rules.d/99-steelseries-apex7-oled.rules
 udevadm control --reload-rules
-udevadm trigger --action=add --subsystem-match=hidraw
-udevadm trigger --action=change --subsystem-match=hidraw
+# Re-apply the rule to the keyboard's own hidraw nodes and nothing else. A
+# blanket trigger over every hidraw node re-announces unrelated devices, and
+# a game running under Proton lost its Steam Controller that way. A change
+# event is enough: 73-seat-late.rules grants uaccess on every action but
+# remove.
+for node in /sys/class/hidraw/hidraw*; do
+  [[ -r $node/device/uevent ]] || continue
+  case $(grep -m1 '^HID_ID=' "$node/device/uevent" || true) in
+  HID_ID=0003:00001038:00001610 | HID_ID=0003:00001038:00001612 | HID_ID=0003:00001038:00001614 | \
+    HID_ID=0003:00001038:00001618 | HID_ID=0003:00001038:0000161C)
+    udevadm trigger --action=change -- "$node"
+    ;;
+  esac
+done
 echo "Installed $DEST"
