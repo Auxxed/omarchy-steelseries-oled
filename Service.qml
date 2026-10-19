@@ -44,6 +44,12 @@ Item {
   property string drawStyle: "typewriter"
   readonly property var drawStyleOrder: ["static", "typewriter", "spin", "waves"]
   readonly property bool drawAnimated: drawStyle !== "static"
+  // Named copies of the canvas. The live drawing stays in drawing.hex; these
+  // are the ones the Create tab can load back. Capped so settings stay small.
+  property var savedDrawings: []
+  property int drawSaveSeq: 1
+  property string activeDrawSave: ""
+  readonly property int maxDrawSaves: 16
   property int drawDelayMs: 100
   property int drawPreviewRev: 0
   property int pendingDrawRev: 0
@@ -532,7 +538,7 @@ Item {
       sourceLabel = customText || "Text"
       delayMs = textDelayMs
     } else if (name === "draw") {
-      sourceLabel = "Your drawing"
+      sourceLabel = drawSaveLabel() || "Your drawing"
       delayMs = drawAnimated ? drawDelayMs : 100
     }
     lastError = ""
@@ -631,9 +637,118 @@ Item {
     return out
   }
 
+  function plainDrawName(raw) {
+    var name = String(raw || "").replace(/[\u0000-\u001f\u007f-\u009f<>&]/g, "").replace(/\s+/g, " ").trim()
+    if (name.length > 24) name = name.slice(0, 24).trim()
+    return name
+  }
+
+  function drawSaveLabel() {
+    for (var i = 0; i < savedDrawings.length; i++)
+      if (savedDrawings[i].id === activeDrawSave) return savedDrawings[i].name
+    return ""
+  }
+
+  function acceptSavedDrawing(item, seenIds, seenNames) {
+    if (!item || typeof item !== "object") return null
+    var id = String(item.id || "")
+    if (!/^[a-z0-9]{1,16}$/.test(id) || seenIds[id]) return null
+    var name = plainDrawName(item.name)
+    if (name === "" || seenNames[name.toLowerCase()]) return null
+    if (!hexToPixels(item.hex)) return null
+    var style = String(item.style || "")
+    if (drawStyleOrder.indexOf(style) === -1) style = "typewriter"
+    seenIds[id] = true
+    seenNames[name.toLowerCase()] = true
+    return { id: id, name: name, hex: pixelsToHex(hexToPixels(item.hex)), style: style }
+  }
+
+  // Keep this drawing under a name. The same name (any caps) updates that
+  // save; a blank name becomes "Drawing N". Returns the name that was stored.
+  function saveDrawing(rawName) {
+    if (!hasDrawing) return ""
+    var name = plainDrawName(rawName)
+    var list = savedDrawings.slice()
+    var hex = pixelsToHex(drawPixels)
+    var style = drawStyle
+    var id = ""
+    var i
+    if (name !== "") {
+      for (i = 0; i < list.length; i++) {
+        if (list[i].name.toLowerCase() === name.toLowerCase()) {
+          id = list[i].id
+          list[i] = { id: id, name: name, hex: hex, style: style }
+          break
+        }
+      }
+    }
+    if (id === "") {
+      if (name === "") {
+        var used = {}
+        for (i = 0; i < list.length; i++) used[list[i].name.toLowerCase()] = true
+        var n = 1
+        while (used["drawing " + n]) n++
+        name = "Drawing " + n
+      }
+      id = "d" + drawSaveSeq
+      drawSaveSeq = drawSaveSeq + 1
+      list.push({ id: id, name: name, hex: hex, style: style })
+      if (list.length > maxDrawSaves) list = list.slice(list.length - maxDrawSaves)
+    }
+    savedDrawings = list
+    activeDrawSave = id
+    if (isDraw) sourceLabel = name
+    if (settingsLoaded) scheduleSave()
+    return name
+  }
+
+  function loadDrawing(id) {
+    var save = null
+    for (var i = 0; i < savedDrawings.length; i++)
+      if (savedDrawings[i].id === id) save = savedDrawings[i]
+    if (!save) return
+    var pix = hexToPixels(save.hex)
+    if (!pix) return
+    var sameStyle = drawStyleOrder.indexOf(save.style) !== -1 && save.style === drawStyle
+    if (activeDrawSave === id && sameStyle && pixelsToHex(drawPixels) === save.hex) {
+      if (!isDraw) showDrawing()
+      return
+    }
+    pushUndo()
+    if (!sameStyle && drawStyleOrder.indexOf(save.style) !== -1) drawStyle = save.style
+    drawPixels = pix
+    drawChanged()
+    activeDrawSave = id
+    // A still save shown over an animation never reaches setPreset from
+    // drawChanged, so the stream would keep playing the old frames.
+    if (!drawAnimated) setPreset("draw")
+    else if (isDraw) sourceLabel = save.name
+    if (settingsLoaded) scheduleSave()
+  }
+
+  function deleteDrawing(id) {
+    var list = []
+    var removed = false
+    for (var i = 0; i < savedDrawings.length; i++) {
+      if (savedDrawings[i].id === id) removed = true
+      else list.push(savedDrawings[i])
+    }
+    if (!removed) return
+    savedDrawings = list
+    if (activeDrawSave === id) {
+      activeDrawSave = ""
+      if (isDraw) sourceLabel = "Your drawing"
+    }
+    if (settingsLoaded) scheduleSave()
+  }
+
   // Every edit: repaint, persist (which is also how the live helper hears
   // about it), and make sure the OLED is actually showing the drawing.
   function drawChanged() {
+    if (activeDrawSave !== "") {
+      activeDrawSave = ""
+      if (isDraw) sourceLabel = "Your drawing"
+    }
     hasDrawing = true
     drawRev++
     drawSaveTimer.start()
@@ -665,6 +780,7 @@ Item {
   function setDrawStyle(style) {
     if (drawStyleOrder.indexOf(style) === -1 || style === drawStyle) return
     drawStyle = style
+    activeDrawSave = ""
     if (settingsLoaded) scheduleSave()
     if (!hasDrawing) return
     if (!drawAnimated) {
@@ -921,6 +1037,9 @@ Item {
     var txtDelay = 100
     var customRev = 0
     var textRev = 0
+    var saves = []
+    var saveSeq = 1
+    var saveId = ""
     if (raw && String(raw).trim() !== "") {
       try {
         var obj = JSON.parse(raw)
@@ -950,12 +1069,34 @@ Item {
         if (obj && obj.textDelayMs !== undefined) txtDelay = Math.max(50, Math.min(500, Math.round(Number(obj.textDelayMs))))
         if (obj && obj.customPreviewRev !== undefined) customRev = Math.max(0, Math.round(Number(obj.customPreviewRev)))
         if (obj && obj.textPreviewRev !== undefined) textRev = Math.max(0, Math.round(Number(obj.textPreviewRev)))
+        if (obj && obj.drawSaveSeq !== undefined) {
+          var parsedSeq = Math.round(Number(obj.drawSaveSeq))
+          if (parsedSeq >= 1 && parsedSeq <= 1000000) saveSeq = parsedSeq
+        }
+        var rawSaves = obj && obj.drawings
+        if (rawSaves && rawSaves.length !== undefined) {
+          var seenIds = {}
+          var seenNames = {}
+          var saveCount = Math.min(Number(rawSaves.length) || 0, maxDrawSaves)
+          for (var s = 0; s < saveCount; s++) {
+            var accepted = acceptSavedDrawing(rawSaves[s], seenIds, seenNames)
+            if (!accepted) continue
+            saves.push(accepted)
+            var seqMatch = /^d(\d+)$/.exec(accepted.id)
+            if (seqMatch) saveSeq = Math.max(saveSeq, Number(seqMatch[1]) + 1)
+          }
+        }
+        if (obj && typeof obj.drawSaveId === "string" && seenIds && seenIds[obj.drawSaveId])
+          saveId = obj.drawSaveId
       } catch (e) {}
     }
     invert = inv
     idleSync = sync
     sleepMinutes = sleepMin
     drawStyle = dStyle
+    savedDrawings = saves
+    drawSaveSeq = saveSeq
+    activeDrawSave = saveId
     drawDelayMs = dDelay
     drawPreviewRev = dRev
     drawPreviewStale = dRev === 0
@@ -976,7 +1117,7 @@ Item {
     else if (nextPreset === "static") sourceLabel = "Static"
     else if (nextPreset === "custom") sourceLabel = label || "Custom"
     else if (nextPreset === "text") sourceLabel = txt || "Text"
-    else if (nextPreset === "draw") sourceLabel = "Your drawing"
+    else if (nextPreset === "draw") sourceLabel = drawSaveLabel() || "Your drawing"
     else sourceLabel = "Omarchy"
     settingsLoaded = true
     setEnabled(on)
@@ -997,6 +1138,9 @@ Item {
       idleSync: idleSync,
       sleepMinutes: sleepMinutes,
       drawStyle: drawStyle,
+      drawings: savedDrawings,
+      drawSaveSeq: drawSaveSeq,
+      drawSaveId: activeDrawSave,
       drawDelayMs: drawDelayMs,
       drawPreviewRev: drawPreviewRev,
       threshold: threshold,

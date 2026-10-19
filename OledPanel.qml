@@ -846,9 +846,15 @@ Panel {
 
           // Create: paint the OLED directly on the stage above.
           Column {
+            id: createColumn
             width: parent.width
             spacing: Style.space(8)
             visible: root.creating
+            onVisibleChanged: {
+              if (!visible || !root.ready || saveName.text !== "") return
+              var label = root.oled.drawSaveLabel()
+              if (label !== "") saveName.text = label
+            }
 
             Item {
               width: parent.width
@@ -985,6 +991,89 @@ Panel {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.oled.showDrawing()
+              }
+            }
+
+            PanelSectionHeader {
+              text: "SAVED"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              id: saveRow
+              width: parent.width
+              spacing: Style.space(6)
+
+              function commitSave() {
+                if (!root.ready || !root.oled.hasDrawing) return
+                var stored = root.oled.saveDrawing(saveName.text)
+                if (stored !== "") saveName.text = stored
+              }
+
+              TextField {
+                id: saveName
+                width: parent.width - saveButton.width - (deleteSaveButton.visible ? deleteSaveButton.width + saveRow.spacing : 0) - saveRow.spacing
+                placeholderText: "Name this drawing…"
+                maximumLength: 24
+                foreground: root.foreground
+                font.family: root.fontFamily
+                onAccepted: saveRow.commitSave()
+              }
+
+              Button {
+                id: saveButton
+                iconText: ""
+                text: "Save"
+                tooltipText: "Keep this drawing. Saving the same name updates it"
+                bordered: true
+                enabled: root.ready && root.oled.hasDrawing
+                opacity: enabled ? 1 : 0.4
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: saveRow.commitSave()
+              }
+
+              Button {
+                id: deleteSaveButton
+                iconText: ""
+                text: "Delete"
+                tooltipText: "Remove the selected save. The canvas stays"
+                bordered: true
+                visible: root.ready && root.oled.activeDrawSave !== ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  if (!root.ready || root.oled.activeDrawSave === "") return
+                  root.oled.deleteDrawing(root.oled.activeDrawSave)
+                  saveName.text = ""
+                }
+              }
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(5)
+              visible: root.ready && root.oled.savedDrawings.length > 0
+
+              Repeater {
+                model: root.ready ? root.oled.savedDrawings : []
+                delegate: Button {
+                  required property var modelData
+                  text: modelData.name
+                  tooltipText: "Load this drawing"
+                  selected: root.ready && root.oled.activeDrawSave === modelData.id
+                  bordered: true
+                  fontSize: Style.font.bodySmall
+                  horizontalPadding: Style.space(8)
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: {
+                    if (!root.ready) return
+                    root.oled.loadDrawing(modelData.id)
+                    saveName.text = modelData.name
+                  }
+                }
               }
             }
 

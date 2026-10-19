@@ -152,6 +152,9 @@ Left click the bar icon to open the panel.
   you draw), **Typewriter**, **Spin** or **Waves**. Separate shapes animate
   like the logo's letters. Animated styles re-render a moment after you
   stop drawing; hover the screen to edit, move away to watch the loop.
+  **Save** keeps a named copy (up to 16). Saving the same name updates that
+  copy, and clicking a name loads it back, style included. **Delete** removes
+  the selected save and leaves the canvas alone.
 - **Follow screensaver**: while Omarchy's idle screensaver is up, the OLED
   plays the screensaver effects too, then goes back to whatever it was showing.
 - **Sleep when idle**: Never, 5, 10 (default), 30 or 60 minutes. After that
@@ -178,7 +181,10 @@ sudo udevadm control --reload-rules
 
 Removal does not factory-reset the OLED. Unplug the keyboard (or open its
 onboard menu) to leave the firmware logo showing again. The udev rule, if you
-installed it, stays until you remove that file yourself.
+installed it, stays until you remove that file yourself. Saved drawings, the
+current canvas, and the rest of the plugin's state stay in
+`~/.local/state/omarchy/steelseries-oled.json` and
+`~/.local/state/omarchy/steelseries-oled/` until you delete those yourself.
 
 ## Manual apply
 
