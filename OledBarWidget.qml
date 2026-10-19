@@ -48,14 +48,36 @@ BarWidget {
     }
   }
 
+  // One bar widget per monitor, one IPC target: the first widget answers,
+  // and opens the panel on the focused monitor through the shell.
+  property bool ipcOwner: false
+
+  function viaShell(action) {
+    var sh = bar ? bar.shell : null
+    if (!sh || typeof sh[action] !== "function") return false
+    if (action === "hide") sh.hide(moduleName)
+    else sh[action](moduleName, "{}")
+    return true
+  }
+
+  Timer {
+    interval: 1500
+    running: true
+    onTriggered: {
+      var items = root.bar && typeof root.bar.moduleWidgets === "function" ? root.bar.moduleWidgets(root.moduleName) : null
+      root.ipcOwner = !items || !items.length || items[0] === root
+    }
+  }
+
   IpcHandler {
     target: "io.github.auxxed.steelseries-oled.panel"
+    enabled: root.ipcOwner
 
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): void { root.toggle() }
+    function open(): void { if (!root.viaShell("summon")) root.open() }
+    function close(): void { if (!root.viaShell("hide")) root.close() }
+    function show(): void { open() }
+    function hide(): void { close() }
+    function toggle(): void { if (!root.viaShell("toggle")) root.toggle() }
   }
 
   BarIconButton {

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Build the "Screensaver" OLED loops from Omarchy's idle screensaver.
 
 Runs `ttfx` (the terminal text effects engine behind omarchy-screensaver) on
@@ -22,6 +22,8 @@ import struct
 import sys
 import termios
 import time
+
+TTFX = "/usr/bin/ttfx"
 
 from make_gif import ASSETS, H, W, blank, pack, write_frames_blob, write_gif
 
@@ -75,10 +77,10 @@ def read_logo(path: str) -> tuple[int, int]:
 def capture(effect: str, logo: str, cols: int, rows: int) -> bytes:
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvp(
-            "ttfx",
+        os.execv(
+            TTFX,
             [
-                "ttfx", "-i", logo,
+                TTFX, "-i", logo,
                 "--frame-rate", str(SOURCE_FPS),
                 "--canvas-width", "0", "--canvas-height", "0",
                 "--anchor-canvas", "c", "--anchor-text", "c",

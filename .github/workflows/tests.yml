@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Reads the code, nothing more.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      # Pinned to full commit SHAs: a tag can be moved.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # apply.py is stdlib-only; the tests use a recording device, fake /proc
+      # and /sys files and a throwaway state folder. The ImageMagick render
+      # test skips itself where /usr/bin/magick is missing.
+      - name: apply.py
+        run: python -I tests/test_apply.py -v
+
+      - name: Hardening
+        run: python -I tests/test_hardening.py -v

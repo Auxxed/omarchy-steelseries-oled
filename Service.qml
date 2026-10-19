@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import Quickshell.Services.Mpris
 import Quickshell.Wayland
 
 // Headless service: stream the Omarchy GIF to a SteelSeries Apex OLED.
@@ -25,11 +26,25 @@ Item {
   readonly property bool isScreensaver: isScreensaverPreset(preset)
   readonly property bool isText: preset === "text"
   readonly property bool isDraw: preset === "draw"
+  // Info screens apply.py draws itself: "info:clock", "info:system" (CPU,
+  // RAM and temperature) and "info:media" (what is playing, from MPRIS).
+  readonly property bool isInfo: isInfoPreset(preset)
+  readonly property string infoMode: isInfo ? preset.slice(5) : ""
+  readonly property var infoModes: ["clock", "system", "media"]
+  readonly property var infoLabels: ({ "clock": "Clock", "system": "System", "media": "Now playing" })
+  // The frame an info screen shows, sent back by apply.py while a panel
+  // is open (previewWanted), for the panel's live copy.
+  property var infoPixels: blankPixels()
+  property int infoRev: 0
+  property bool previewWanted: false
+  onPreviewWantedChanged: sendInfo({ preview: previewWanted })
 
   // Create tab: a 128x40 1-bit drawing, painted in the panel and streamed
   // live. Pixels live here (not in the panel) so the drawing survives the
   // panel closing; drawRev bumps on every change since in-place array edits
-  // don't notify bindings. apply.py --watch --live picks up drawFile edits.
+  // don't notify bindings. A still drawing streams live: each edit goes to
+  // apply.py --watch --live - as one hex line on its stdin, and the canvas is
+  // saved (drawing.hex) once you pause.
   readonly property int oledW: 128
   readonly property int oledH: 40
   property var drawPixels: blankPixels()
@@ -38,7 +53,6 @@ Item {
   property var drawUndoStack: []
   property var strokeBase: null
   property bool drawFromBusy: false
-  property bool drawDirReady: false
   // Same treatments as the wordmark/text. "static" streams the canvas live;
   // the others are rendered to draw.frames a moment after you stop drawing.
   property string drawStyle: "typewriter"
@@ -106,6 +120,9 @@ Item {
   property int threshold: 50
   property int delayMs: 100
   property string sourceLabel: "Omarchy"
+  // The last import's name, kept apart from sourceLabel (which follows the
+  // preset), so going back to the custom GIF shows its name again.
+  property string customLabel: ""
   property string sourceFile: ""
   // Per-kind preview revision, bumped only when that kind is actually
   // (re)rendered — not on a plain preset switch, since the file for the
@@ -193,7 +210,6 @@ Item {
   readonly property string textFrames: customDir + "/text.frames"
   readonly property string textRest: customDir + "/text.bin"
   readonly property string textPreview: customDir + "/text-preview-" + textPreviewRev + ".gif"
-  readonly property string drawFile: customDir + "/drawing.hex"
   readonly property string drawFramesPath: customDir + "/draw.frames"
   readonly property string drawBinPath: customDir + "/draw.bin"
   readonly property string drawPreview: customDir + "/draw-preview-" + drawPreviewRev + ".gif"
@@ -258,6 +274,11 @@ Item {
     return out
   }
 
+  function isInfoPreset(name) {
+    name = String(name || "")
+    return name.indexOf("info:") === 0 && infoModes.indexOf(name.slice(5)) !== -1
+  }
+
   function isScreensaverPreset(name) {
     name = String(name || "")
     if (name === "screensaver") return true
@@ -289,6 +310,7 @@ Item {
     else if (isScreensaver) path = screensaverDir + "/" + (preset === "screensaver" ? "decrypt" : preset.slice(12)) + ".gif"
     else if (isText) path = textPreview
     else if (isDraw) return drawAnimated ? "file://" + drawPreview : ""
+    else if (isInfo) return ""
     return "file://" + path
   }
   readonly property string statusLabel: {
@@ -301,10 +323,18 @@ Item {
     return "…"
   }
 
+  // apply.py always runs isolated (-I): no PYTHON* variables, no user
+  // site-packages, nothing imported from the working directory.
+  function helperCommand(args) {
+    return ["/usr/bin/python3", "-I", "-u", helper].concat(args)
+  }
+
   function watchCommand() {
-    var cmd = ["/usr/bin/python3", "-u", helper, "--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)]
+    var cmd = helperCommand(["--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)])
     if (invert) cmd.push("--invert")
-    if (idleSyncActive || preset === "screensaver") {
+    if (isInfo && !idleSyncActive) {
+      cmd.push("--info", infoMode)
+    } else if (idleSyncActive || preset === "screensaver") {
       var effects = shuffledEffects()
       for (var i = 0; i < effects.length; i++)
         cmd.push("--frames", screensaverDir + "/" + effects[i] + ".frames")
@@ -331,13 +361,57 @@ Item {
       cmd.push("--frames", drawFramesPath)
       cmd.push("--rest", drawBinPath)
     } else if (isDraw) {
-      cmd.push("--live", drawFile)
+      cmd.push("--live", "-", "--live-hex", pixelsToHex(drawPixels))
     }
     return cmd
   }
 
   function restCommand() {
-    return ["/usr/bin/python3", "-u", helper, "--release"]
+    return helperCommand(["--release"])
+  }
+
+  // A line for apply.py's stdin (info screens and the live drawing).
+  function sendToStream(line) {
+    if (watchProcess.running) watchProcess.write(line + "\n")
+  }
+
+  function sendInfo(obj) {
+    if (isInfo && !idleSyncActive) sendToStream(JSON.stringify(obj))
+  }
+
+  // What is playing, for the "Now playing" screen: the first player that
+  // is playing, else the first one there is.
+  readonly property var mediaPlayer: {
+    var list = Mpris.players && Mpris.players.values ? Mpris.players.values : []
+    for (var i = 0; i < list.length; i++) if (list[i] && list[i].isPlaying) return list[i]
+    return list.length ? list[0] : null
+  }
+  readonly property string mediaLine: {
+    var p = mediaPlayer
+    if (!p) return JSON.stringify({ media: {} })
+    var progress = p.lengthSupported && p.positionSupported && p.length > 0 ? Math.max(0, Math.min(1, p.position / p.length)) : -1
+    return JSON.stringify({ media: {
+      title: String(p.trackTitle || "").slice(0, 200),
+      artist: String(p.trackArtist || "").slice(0, 200),
+      playing: p.isPlaying === true,
+      progress: Math.round(progress * 100) / 100
+    } })
+  }
+  onMediaLineChanged: if (infoMode === "media") sendInfo(JSON.parse(mediaLine))
+
+  // MPRIS positions only move when asked, so the bar along the bottom of
+  // the screen is nudged once a second while something plays.
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.infoMode === "media" && !!root.mediaPlayer && root.mediaPlayer.isPlaying
+    onTriggered: root.mediaPlayer.positionChanged()
+  }
+
+  function streamStarted() {
+    if (!isInfo || idleSyncActive) return
+    sendInfo({ preview: previewWanted })
+    if (infoMode === "media") sendInfo(JSON.parse(mediaLine))
   }
 
   function setEnabled(on) {
@@ -405,7 +479,7 @@ Item {
     lastError = ""
     pickBusy = true
     pickProcess.command = [
-      "omarchy", "file", "select",
+      "/usr/bin/omarchy", "file", "select",
       "--title", "OLED image",
       "--extensions", "gif png jpg jpeg webp bmp"
     ]
@@ -418,12 +492,12 @@ Item {
     pendingPreviewSuffix = customPreviewRev + 1
     lastError = ""
     importBusy = true
-    importProcess.command = [
-      "/usr/bin/python3", "-u", helper, "--import", path,
+    importProcess.command = helperCommand([
+      "--import", path,
       "--out-dir", customDir,
       "--threshold", String(threshold),
       "--preview-suffix", String(pendingPreviewSuffix)
-    ]
+    ])
     importProcess.running = true
   }
 
@@ -434,7 +508,7 @@ Item {
     pendingPreviewSuffix = customPreviewRev + 1
     lastError = ""
     importBusy = true
-    var cmd = ["/usr/bin/python3", "-u", helper]
+    var cmd = helperCommand([])
     if (item.path) cmd.push("--import", item.path)
     else cmd.push("--import-url", "https://www.nlog.us/content/steelseries/" + item.file)
     cmd.push("--out-dir", customDir, "--threshold", String(threshold), "--label", item.name)
@@ -461,13 +535,13 @@ Item {
     pendingPreviewSuffix = textPreviewRev + 1
     lastError = ""
     importBusy = true
-    importProcess.command = [
-      "/usr/bin/python3", "-u", helper, "--render-text", text,
+    importProcess.command = helperCommand([
+      "--render-text", text,
       "--style", style,
       "--font", font,
       "--out-dir", customDir,
       "--preview-suffix", String(pendingPreviewSuffix)
-    ]
+    ])
     importProcess.running = true
   }
 
@@ -516,7 +590,7 @@ Item {
   }
 
   function setPreset(name) {
-    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom" && name !== "draw")
+    if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom" && name !== "draw" && !isInfoPreset(name))
       name = "omarchy"
     preset = name
     if (name === "spin") {
@@ -540,6 +614,10 @@ Item {
     } else if (name === "draw") {
       sourceLabel = drawSaveLabel() || "Your drawing"
       delayMs = drawAnimated ? drawDelayMs : 100
+    } else if (isInfoPreset(name)) {
+      sourceLabel = infoLabels[name.slice(5)]
+    } else if (name === "custom") {
+      sourceLabel = customLabel || "Custom"
     }
     lastError = ""
     if (settingsLoaded) scheduleSave()
@@ -584,6 +662,11 @@ Item {
       if (drawPick === null) return
       if (drawPick === drawStyle) showDrawing()
       else setDrawStyle(drawPick)
+    } else if (scope === "info") {
+      for (i = 0; i < infoModes.length; i++)
+        if (preset !== "info:" + infoModes[i]) pool.push("info:" + infoModes[i])
+      var screen = pick(pool)
+      if (screen !== null) setPreset(screen)
     } else if (scope === "effects") {
       for (i = 0; i < screensaverEffects.length; i++)
         if (preset !== "screensaver:" + screensaverEffects[i]) pool.push("screensaver:" + screensaverEffects[i])
@@ -604,8 +687,6 @@ Item {
 
   function useCustom() {
     if (!hasCustom) return
-    if (sourceLabel === "" || sourceLabel === "Omarchy" || sourceLabel === "Static" || sourceLabel === "Spin" || sourceLabel.indexOf("Screensaver") === 0)
-      sourceLabel = "Custom"
     setPreset("custom")
   }
 
@@ -768,12 +849,12 @@ Item {
     }
     drawRenderBusy = true
     pendingDrawRev = drawPreviewRev + 1
-    drawRenderProcess.command = [
-      "/usr/bin/python3", "-u", helper, "--render-drawing", pixelsToHex(drawPixels),
+    drawRenderProcess.command = helperCommand([
+      "--render-drawing", pixelsToHex(drawPixels),
       "--style", drawStyle,
       "--out-dir", customDir,
       "--preview-suffix", String(pendingDrawRev)
-    ]
+    ])
     drawRenderProcess.running = true
   }
 
@@ -886,7 +967,7 @@ Item {
     else if (isText) src = textRest
     else if (isDraw) return
     drawFromBusy = true
-    drawFromProcess.command = ["/usr/bin/python3", "-u", helper, "--hex", src]
+    drawFromProcess.command = helperCommand(["--hex", src])
     drawFromProcess.running = true
   }
 
@@ -980,10 +1061,18 @@ Item {
   }
 
   function handleLine(line) {
-    if (!line || !enabled || sleeping) return
+    if (!line || !enabled || sleeping || line.length > 4096) return
     var msg = null
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg || typeof msg !== "object") return
+    if (msg.type === "frame") {
+      var pix = hexToPixels(msg.hex)
+      if (pix) {
+        infoPixels = pix
+        infoRev++
+      }
+      return
+    }
     if (msg.type === "status") {
       state = String(msg.state || "")
       devicePath = String(msg.path || "")
@@ -1060,6 +1149,7 @@ Item {
     var saves = []
     var saveSeq = 1
     var saveId = ""
+    var custLabel = ""
     if (raw && String(raw).trim() !== "") {
       try {
         var obj = JSON.parse(raw)
@@ -1071,7 +1161,10 @@ Item {
         else if (obj && isScreensaverPreset(obj.source)) nextPreset = String(obj.source)
         else if (obj && obj.source === "text") nextPreset = "text"
         else if (obj && obj.source === "draw") nextPreset = "draw"
+        else if (obj && isInfoPreset(obj.source)) nextPreset = String(obj.source)
         if (obj && obj.label) label = String(obj.label)
+        if (obj && typeof obj.customLabel === "string") custLabel = obj.customLabel.slice(0, 80)
+        else if (obj && obj.source === "custom" && obj.label) custLabel = String(obj.label).slice(0, 80)
         if (obj && obj.invert === true) inv = true
         if (obj && obj.idleSync === false) sync = false
         if (obj && obj.drawStyle && drawStyleOrder.indexOf(String(obj.drawStyle)) !== -1) dStyle = String(obj.drawStyle)
@@ -1111,6 +1204,7 @@ Item {
       } catch (e) {}
     }
     invert = inv
+    customLabel = custLabel
     idleSync = sync
     sleepMinutes = sleepMin
     drawStyle = dStyle
@@ -1135,9 +1229,10 @@ Item {
     else if (nextPreset === "waves") sourceLabel = "Waves"
     else if (isScreensaverPreset(nextPreset)) sourceLabel = screensaverLabel(nextPreset)
     else if (nextPreset === "static") sourceLabel = "Static"
-    else if (nextPreset === "custom") sourceLabel = label || "Custom"
+    else if (nextPreset === "custom") sourceLabel = custLabel || label || "Custom"
     else if (nextPreset === "text") sourceLabel = txt || "Text"
     else if (nextPreset === "draw") sourceLabel = drawSaveLabel() || "Your drawing"
+    else if (isInfoPreset(nextPreset)) sourceLabel = infoLabels[nextPreset.slice(5)]
     else sourceLabel = "Omarchy"
     settingsLoaded = true
     setEnabled(on)
@@ -1149,11 +1244,28 @@ Item {
     saveTimer.restart()
   }
 
+  // Settings are saved by apply.py --write-settings: the JSON arrives on its
+  // stdin and is written as a 0600 temporary renamed into place. One save
+  // runs at a time; a change during a save is saved once it finishes.
+  property string pendingSettings: ""
+  property bool settingsDirty: false
+
   function flushSettings() {
-    settingsFile.setText(JSON.stringify({
+    var text = settingsJson()
+    if (settingsWriter.running) {
+      settingsDirty = true
+      return
+    }
+    pendingSettings = text
+    settingsWriter.running = true
+  }
+
+  function settingsJson() {
+    return JSON.stringify({
       enabled: enabled,
       source: preset,
       label: sourceLabel,
+      customLabel: customLabel,
       invert: invert,
       idleSync: idleSync,
       sleepMinutes: sleepMinutes,
@@ -1172,42 +1284,132 @@ Item {
       textDelayMs: textDelayMs,
       customPreviewRev: customPreviewRev,
       textPreviewRev: textPreviewRev
-    }, null, 2) + "\n")
+    }, null, 2) + "\n"
   }
 
   onPluginDirChanged: if (settingsLoaded && enabled) root.startWatch()
-  Component.onCompleted: settingsFile.reload()
-
-  FileView {
-    id: settingsFile
-    path: root.settingsPath
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.loadSettings(text())
-    onLoadFailed: root.loadSettings("")
+  Component.onCompleted: {
+    settingsReader.running = true
+    haveProcess.running = true
+    drawReader.running = true
   }
 
-  FileView {
-    path: root.customFrames
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.hasCustom = true
-    onLoadFailed: root.hasCustom = false
+  // Helper output is collected a chunk at a time up to a cap; a helper
+  // that says more than that is stopped and its output dropped.
+  readonly property int maxHelperOutput: 8192
+
+  function collect(proc, chunk, limit) {
+    if (proc.overflow) return
+    proc.buf += String(chunk || "")
+    if (proc.buf.length > (limit || maxHelperOutput)) {
+      proc.overflow = true
+      proc.buf = ""
+      proc.signal(15)
+    }
   }
 
-  FileView {
-    id: drawFileView
-    path: root.drawFile
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-    onLoaded: {
-      var pix = root.hexToPixels(text())
+  function takeOutput(proc) {
+    var text = proc.overflow ? "" : proc.buf
+    proc.buf = ""
+    proc.overflow = false
+    return text
+  }
+
+  Process {
+    id: settingsReader
+    property string buf: ""
+    property bool overflow: false
+    command: root.helperCommand(["--read-settings"])
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(settingsReader, chunk, 524288) }
+    }
+    onExited: function(code) { root.loadSettings(code === 0 ? root.takeOutput(settingsReader) : "") }
+  }
+
+  Process {
+    id: settingsWriter
+    stdinEnabled: true
+    command: root.helperCommand(["--write-settings"])
+    onStarted: {
+      write(root.pendingSettings)
+      stdinEnabled = false
+    }
+    onExited: function(code) {
+      stdinEnabled = true
+      if (code !== 0) root.lastError = "Could not save the OLED settings"
+      if (root.settingsDirty) {
+        root.settingsDirty = false
+        root.flushSettings()
+      }
+    }
+  }
+
+  // Which saved results exist (custom import, rendered text, a drawing),
+  // without reading them into the shell.
+  Process {
+    id: haveProcess
+    property string buf: ""
+    property bool overflow: false
+    command: root.helperCommand(["--have", "--out-dir", root.customDir])
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(haveProcess, chunk) }
+    }
+    onExited: function(code) {
+      var msg = null
+      try { msg = JSON.parse(root.takeOutput(haveProcess)) } catch (e) {}
+      if (!msg || typeof msg !== "object") return
+      root.hasCustom = msg.custom === true
+      root.hasText = msg.text === true
+    }
+  }
+
+  Process {
+    id: drawReader
+    property string buf: ""
+    property bool overflow: false
+    command: root.helperCommand(["--read-drawing", "--out-dir", root.customDir])
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(drawReader, chunk) }
+    }
+    onExited: function(code) {
+      var pix = code === 0 ? root.hexToPixels(root.takeOutput(drawReader)) : null
       if (!pix) return
       root.drawPixels = pix
       root.hasDrawing = true
       root.drawRev++
+    }
+  }
+
+  Process {
+    id: drawWriter
+    property string pending: ""
+    stdinEnabled: true
+    command: root.helperCommand(["--write-drawing", "--out-dir", root.customDir])
+    onStarted: {
+      write(pending + "\n")
+      stdinEnabled = false
+    }
+    onExited: {
+      stdinEnabled = true
+      if (pending !== root.pixelsToHex(root.drawPixels)) drawPersistTimer.restart()
+    }
+  }
+
+  // The canvas is saved once you pause, not on every pixel.
+  Timer {
+    id: drawPersistTimer
+    interval: 800
+    repeat: false
+    onTriggered: {
+      if (drawWriter.running) {
+        restart()
+        return
+      }
+      drawWriter.pending = root.pixelsToHex(root.drawPixels)
+      drawWriter.running = true
     }
   }
 
@@ -1222,22 +1424,32 @@ Item {
   Process {
     id: drawRenderProcess
     running: false
-    stdout: StdioCollector { id: drawRenderOut; waitForEnd: true }
-    stderr: StdioCollector { id: drawRenderErr; waitForEnd: true }
+    property string buf: ""
+    property bool overflow: false
+    property string errBuf: ""
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(drawRenderProcess, chunk) }
+    }
+    stderr: SplitParser {
+      onRead: function(line) { if (drawRenderProcess.errBuf.length < 400) drawRenderProcess.errBuf += String(line || "") + " " }
+    }
     onExited: function(code) {
       root.drawRenderBusy = false
+      var out = root.takeOutput(drawRenderProcess)
+      var err = drawRenderProcess.errBuf.trim()
+      drawRenderProcess.errBuf = ""
       if (root.drawRenderQueued) {
         root.drawRenderQueued = false
         root.renderDrawing()
         return
       }
       if (code !== 0) {
-        var err = root.boundedCollectorText(drawRenderErr).trim()
         root.lastError = (err !== "" ? err : "Could not animate the drawing").slice(0, 200)
         return
       }
       var msg = null
-      try { msg = JSON.parse(root.boundedCollectorText(drawRenderOut).trim()) } catch (e) {}
+      try { msg = JSON.parse(out.trim()) } catch (e) {}
       if (msg && msg.delay_ms)
         root.drawDelayMs = Math.max(50, Math.min(500, Math.round(Number(msg.delay_ms))))
       root.drawPreviewRev = root.pendingDrawRev
@@ -1247,36 +1459,31 @@ Item {
     }
   }
 
-  // Coalesce a drag's worth of edits into ~25 writes a second.
+  // Coalesce a drag's worth of edits into ~25 frames a second on the live
+  // stream's stdin; the canvas itself is saved once you pause.
   Timer {
     id: drawSaveTimer
     interval: 40
     repeat: false
     onTriggered: {
-      if (root.customDir === "") return
-      if (root.drawDirReady) drawFileView.setText(root.pixelsToHex(root.drawPixels) + "\n")
-      else if (!drawDirMaker.running) drawDirMaker.running = true
-    }
-  }
-
-  // The state dir may not exist yet on a fresh install (apply.py creates it
-  // 0700 for imports); FileView won't create parent directories.
-  Process {
-    id: drawDirMaker
-    command: ["mkdir", "-p", "-m", "700", root.customDir]
-    onExited: function(code) {
-      root.drawDirReady = code === 0
-      if (root.drawDirReady) drawFileView.setText(root.pixelsToHex(root.drawPixels) + "\n")
+      if (root.isDraw && !root.drawAnimated) root.sendToStream(root.pixelsToHex(root.drawPixels))
+      drawPersistTimer.restart()
     }
   }
 
   Process {
     id: drawFromProcess
     running: false
-    stdout: StdioCollector { id: drawFromOut; waitForEnd: true }
+    property string buf: ""
+    property bool overflow: false
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(drawFromProcess, chunk) }
+    }
     onExited: function(code) {
       root.drawFromBusy = false
-      var pix = code === 0 ? root.hexToPixels(root.boundedCollectorText(drawFromOut)) : null
+      var out = root.takeOutput(drawFromProcess)
+      var pix = code === 0 ? root.hexToPixels(out) : null
       if (!pix) {
         root.lastError = "Could not copy the screen"
         return
@@ -1287,13 +1494,6 @@ Item {
     }
   }
 
-  FileView {
-    path: root.textFrames
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.hasText = true
-    onLoadFailed: root.hasText = false
-  }
 
   Timer {
     id: saveTimer
@@ -1312,6 +1512,8 @@ Item {
   Process {
     id: watchProcess
     running: false
+    stdinEnabled: true
+    onStarted: root.streamStarted()
     stdout: SplitParser {
       onRead: function(value) { root.handleLine(value) }
     }
@@ -1351,45 +1553,48 @@ Item {
     running: false
   }
 
-  // pickProcess and importProcess only ever produce a single short line
-  // (a filesystem path, or apply.py's one-line status JSON, both naturally
-  // bounded by filesystem name limits), but StdioCollector buffers whatever
-  // it is given before any check runs, so a helper misbehaving out of
-  // process still shouldn't get its output trusted or acted on unbounded.
-  readonly property int maxHelperOutput: 8192
-
-  function boundedCollectorText(collector) {
-    var text = collector && collector.text ? String(collector.text) : ""
-    return text.length > maxHelperOutput ? "" : text
-  }
-
   Process {
     id: pickProcess
     running: false
-    stdout: StdioCollector { id: pickOut; waitForEnd: true }
+    property string buf: ""
+    property bool overflow: false
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(pickProcess, chunk) }
+    }
     onExited: function(code) {
       root.pickBusy = false
-      var path = root.boundedCollectorText(pickOut).trim()
-      if (code === 0 && path !== "") root.importImage(path)
+      var path = root.takeOutput(pickProcess).trim()
+      if (code === 0 && path !== "" && path.indexOf("\n") < 0) root.importImage(path)
     }
   }
 
   Process {
     id: importProcess
     running: false
-    stdout: StdioCollector { id: importOut; waitForEnd: true }
-    stderr: StdioCollector { id: importErr; waitForEnd: true }
+    property string buf: ""
+    property bool overflow: false
+    property string errBuf: ""
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) { root.collect(importProcess, chunk) }
+    }
+    stderr: SplitParser {
+      onRead: function(line) { if (importProcess.errBuf.length < 400) importProcess.errBuf += String(line || "") + " " }
+    }
     onExited: function(code) {
       root.importBusy = false
+      var out = root.takeOutput(importProcess)
+      var err = importProcess.errBuf.trim()
+      importProcess.errBuf = ""
       if (code !== 0) {
         root.keepDelayOnImport = false
-        var err = root.boundedCollectorText(importErr).trim()
         root.lastError = (err !== "" ? err : (root.pendingKind === "text" ? "Could not render text" : "Could not import image")).slice(0, 200)
         return
       }
       if (root.pendingKind === "text") {
         var textMsg = null
-        try { textMsg = JSON.parse(root.boundedCollectorText(importOut).trim()) } catch (e) {}
+        try { textMsg = JSON.parse(out.trim()) } catch (e) {}
         if (textMsg && textMsg.label !== undefined) root.customText = String(textMsg.label)
         if (textMsg && textMsg.style) root.textStyle = String(textMsg.style)
         if (textMsg && textMsg.font) root.textFont = String(textMsg.font)
@@ -1405,7 +1610,7 @@ Item {
       var srcFile = root.sourceFile
       var delay = root.delayMs
       try {
-        var msg = JSON.parse(root.boundedCollectorText(importOut).trim())
+        var msg = JSON.parse(out.trim())
         if (msg && msg.label && !root.keepDelayOnImport) label = String(msg.label)
         if (msg && msg.source) srcFile = String(msg.source)
         if (msg && msg.delay_ms && !root.keepDelayOnImport)
@@ -1415,6 +1620,7 @@ Item {
       root.preset = "custom"
       root.hasCustom = true
       root.sourceLabel = label
+      root.customLabel = label
       root.sourceFile = srcFile
       root.delayMs = delay
       root.customPreviewRev = root.pendingPreviewSuffix
@@ -1450,6 +1656,22 @@ Item {
     function status(): string { return root.statusLabel }
     function sleepAfter(minutes: int): void { root.setSleepMinutes(minutes) }
     function power(): void { root.toggleEnabled() }
+    // omarchy, static, spin, waves, screensaver, screensaver:<effect>,
+    // info:clock, info:system, info:media, and custom, text or draw once
+    // they exist.
+    // Renders text in the current text style and shows it.
+    function text(value: string): string {
+      if (String(value || "").trim() === "") return "empty"
+      root.setCustomText(value)
+      return "rendering"
+    }
+    function preset(name: string): string {
+      var ok = root.bundledOrder.indexOf(name) !== -1 || root.isScreensaverPreset(name) || root.isInfoPreset(name)
+        || (name === "custom" && root.hasCustom) || (name === "text" && root.hasText) || (name === "draw" && root.hasDrawing)
+      if (!ok) return "unknown preset"
+      root.setPreset(name)
+      return root.preset
+    }
   }
 
   Component.onDestruction: {

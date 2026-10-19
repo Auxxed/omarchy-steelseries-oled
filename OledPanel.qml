@@ -29,6 +29,7 @@ Panel {
     { value: "effects", label: "Effects" },
     { value: "images", label: "GIFs" },
     { value: "text", label: "Text" },
+    { value: "info", label: "Info" },
     { value: "create", label: "Create" }
   ]
 
@@ -39,8 +40,11 @@ Panel {
   // over while the cursor is on the stage, before the first render, or
   // when the drawing isn't on the OLED yet.
   readonly property bool animatedPreview: ready && oled.isDraw && oled.drawAnimated && !oled.drawPreviewStale
-  readonly property bool showCanvas: ready && (creating || oled.isDraw)
+  readonly property bool showCanvas: ready && (creating || oled.isDraw || oled.isInfo)
     && (!animatedPreview || (creating && (painter.containsMouse || painter.pressed)))
+  // An info screen is drawn by apply.py; the panel shows the frames it
+  // sends back. Everything else on the canvas is the drawing.
+  readonly property bool showInfoFrame: ready && oled.isInfo && !creating
   property string drawTool: "pen"
   property int brush: 1
   readonly property var drawTools: [
@@ -57,10 +61,14 @@ Panel {
     if (oled.isCustom) return "images"
     if (oled.isText) return "text"
     if (oled.isDraw) return "create"
+    if (oled.isInfo) return "info"
     return "logo"
   }
 
-  onOpenedChanged: if (opened) tab = tabForPreset()
+  onOpenedChanged: {
+    if (opened) tab = tabForPreset()
+    if (ready) oled.previewWanted = opened
+  }
 
   function open() {
     if (!canOpen) return
@@ -130,7 +138,7 @@ Panel {
             iconComponent: Component {
               Text {
                 textFormat: Text.PlainText
-                text: ""
+                text: "\uF11C"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -223,8 +231,10 @@ Panel {
                   id: drawCanvas
                   anchors.fill: parent
                   visible: root.showCanvas
-                  readonly property int rev: root.ready ? root.oled.drawRev : 0
+                  readonly property int rev: root.ready ? (root.showInfoFrame ? root.oled.infoRev : root.oled.drawRev) : 0
                   onRevChanged: requestPaint()
+                  readonly property bool infoFrame: root.showInfoFrame
+                  onInfoFrameChanged: requestPaint()
                   onVisibleChanged: if (visible) requestPaint()
                   onWidthChanged: requestPaint()
                   opacity: root.on && !root.asleep ? 1 : 0.25
@@ -238,7 +248,7 @@ Panel {
                     ctx.fillStyle = "#000000"
                     ctx.fillRect(0, 0, width, height)
                     if (!root.ready) return
-                    var pix = root.oled.drawPixels
+                    var pix = root.showInfoFrame ? root.oled.infoPixels : root.oled.drawPixels
                     var s = stage.px
                     ctx.fillStyle = "#ffffff"
                     for (var y = 0; y < 40; y++) {
@@ -443,7 +453,7 @@ Panel {
               anchors.right: diceButton.left
               anchors.rightMargin: Style.space(6)
               anchors.verticalCenter: parent.verticalCenter
-              iconText: ""
+              iconText: "\uF042"
               tooltipText: root.ready && root.oled.invert ? "Inverted — click to restore (I)" : "Invert black and white (I)"
               selected: root.ready && root.oled.invert
               bordered: true
@@ -456,7 +466,7 @@ Panel {
               id: diceButton
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              iconText: ""
+              iconText: "\uF074"
               text: "Surprise me"
               bordered: true
               tooltipText: ({
@@ -464,6 +474,7 @@ Panel {
                 effects: "Random screensaver effect (R)",
                 images: "Random GIF from the library (R)",
                 text: "Random style for your text (R)",
+                info: "Another info screen (R)",
                 create: "Random animation for your drawing (R)"
               })[root.tab] || "Surprise me (R)"
               foreground: root.foreground
@@ -531,6 +542,41 @@ Panel {
             }
           }
 
+          // Info: screens apply.py draws live.
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.tab === "info"
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.ready ? root.oled.infoModes : []
+                delegate: Button {
+                  required property var modelData
+                  text: root.oled.infoLabels[modelData] || modelData
+                  selected: root.ready && root.oled.preset === "info:" + modelData
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: if (root.ready) root.oled.setPreset("info:" + modelData)
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: "The time and date, the CPU, memory and CPU temperature, or what is playing (any MPRIS player; the clock when nothing plays). The clock moves a pixel now and then so nothing burns in."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
           // Effects: every ttfx screensaver effect as a chip.
           Column {
             width: parent.width
@@ -552,7 +598,7 @@ Panel {
 
               Button {
                 id: shuffleAllButton
-                iconText: ""
+                iconText: "\uF074"
                 text: "All"
                 tooltipText: "Every effect, shuffled — like the real screensaver"
                 selected: root.ready && root.oled.preset === "screensaver"
@@ -721,7 +767,7 @@ Panel {
 
               Button {
                 width: root.ready && root.oled.hasCustom ? (parent.width - parent.spacing) / 2 : parent.width
-                iconText: ""
+                iconText: "\uF07C"
                 text: root.busy ? "Importing…" : "Choose image"
                 tooltipText: "GIF, PNG, JPG, WebP or BMP — resized to 128×40, 1-bit"
                 bordered: true
@@ -737,7 +783,7 @@ Panel {
               Button {
                 visible: root.ready && root.oled.hasCustom
                 width: (parent.width - parent.spacing) / 2
-                iconText: ""
+                iconText: "\uF1DA"
                 text: "Last image"
                 selected: root.ready && root.oled.isCustom
                 bordered: true
@@ -811,7 +857,7 @@ Panel {
 
               Button {
                 id: renderButton
-                iconText: root.busy ? "" : ""
+                iconText: root.busy ? "" : "\uF04B"
                 text: root.busy ? "…" : (root.ready && root.oled.isText && textInput.text.trim() === root.oled.customText ? "Showing" : "Show")
                 selected: root.ready && root.oled.isText && textInput.text.trim() === root.oled.customText
                 bordered: true
@@ -1141,9 +1187,11 @@ Panel {
             }
           }
 
+          // Info screens run at their own pace, so Speed has nothing to set.
           Column {
             width: parent.width
             spacing: Style.space(4)
+            visible: !(root.ready && root.oled.isInfo)
 
             Item {
               width: parent.width
@@ -1189,7 +1237,7 @@ Panel {
           Button {
             visible: root.ready && root.oled.needsUdev
             width: parent.width
-            iconText: ""
+            iconText: "\uF084"
             text: (root.ready && root.oled.udevBusy) ? "Waiting…" : "Allow keyboard access (U)"
             bordered: true
             foreground: root.foreground

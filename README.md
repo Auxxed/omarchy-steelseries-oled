@@ -4,9 +4,10 @@ Omarchy plugin for the OLED on a SteelSeries Apex keyboard: the official
 **OMARCHY** wordmark by default, or a 3D spin/waves/static cycle of it, the
 Omarchy screensaver's text effects, a
 custom GIF or still image, a random pull from a bundled or online gif
-library, or your own typed text — rendered in
+library, your own typed text — rendered in
 **Omarchy Block**, a companion display font built for this plugin from the
-wordmark's own letterforms.
+wordmark's own letterforms — a drawing of your own, or a live info screen:
+the clock, CPU/RAM/temperature, or what is playing.
 
 A keyboard icon in the bar shows whether the GIF is looping. Click it for
 status and a one-time udev install (polkit prompt). The service keeps
@@ -21,7 +22,7 @@ running. Turning Display off (or `apply.py --release`) blanks the panel.
 ## Gallery
 
 The bar panel: a live, pixel-exact copy of the keyboard's screen up top, then
-Logo · Effects · GIFs · Text · Create tabs. Here **Surprise me** hops through
+Logo · Effects · GIFs · Text · Info · Create tabs. Here **Surprise me** hops through
 screensaver effects, with a quick flip of **Invert** in the middle
 ([MP4](media/panel-demo.mp4)):
 
@@ -33,8 +34,12 @@ screensaver effects, with a quick flip of **Invert** in the middle
 <td align="center" width="50%"><b>Effects</b><br><img src="media/panel-effects.png" width="300" alt="Effects tab: a searchable grid of all 37 screensaver effects, with Fireworks playing"></td>
 </tr>
 <tr>
-<td align="center" width="50%"><b>GIFs</b><br><img src="media/panel-images.png" width="300" alt="GIFs tab: searchable GIF library, Choose image, Last image and the Contrast slider, with Night Runner playing"></td>
-<td align="center" width="50%"><b>Text</b><br><img src="media/panel-text.png" width="300" alt="Text tab: the text box and style chips, with DrugBust rendered in Omarchy Block"></td>
+<td align="center" width="50%"><b>GIFs</b><br><img src="media/panel-images.png" width="300" alt="GIFs tab: the searchable GIF library as a three-column grid, Choose image, Last image and the Contrast slider, with Night Runner playing inverted"></td>
+<td align="center" width="50%"><b>Text</b><br><img src="media/panel-text.png" width="300" alt="Text tab: the text box and style chips, with OMARCHY spinning in Omarchy Block"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>Info</b><br><img src="media/panel-info.png" width="300" alt="Info tab: Clock, System and Now playing chips, with the clock showing 14:06 and MON 19 OCT"></td>
+<td align="center" width="50%"></td>
 </tr>
 </table>
 
@@ -103,7 +108,9 @@ interactively, and drop the `sudo` line if you'd rather grant keyboard
 access later from the panel (**Allow access**, one polkit prompt) instead
 of the command line — see [Keyboard access](#keyboard-access) below.
 
-Runtime is `python3` (stdlib) for HID. Importing a custom GIF or still needs ImageMagick (`magick`), which Omarchy already ships.
+Runtime is `python3` (stdlib) for HID. Importing a custom GIF or still,
+typed text and the info screens need ImageMagick (`/usr/bin/magick`), which
+Omarchy already ships.
 
 ### Keyboard access
 
@@ -145,6 +152,12 @@ Left click the bar icon to open the panel.
 - **Text** tab: type your own text (rendered in Omarchy Block, caps only)
   and pick a **style** (typewriter/static/spin/waves). **Show** switches the
   OLED to it.
+- **Info** tab: screens drawn live in Omarchy Block. **Clock**: the time and
+  the date, nudged a pixel or two every minute so nothing burns in.
+  **System**: CPU load, memory in use and the CPU temperature, as bars.
+  **Now playing**: title and artist of the active MPRIS player (Spotify, a
+  browser, mpv...), a long title scrolls, with a progress bar and a pause
+  mark; with nothing playing it shows the clock.
 - **Create** tab: draw your own 128×40 screen right on the preview. **Pen**,
   **Erase**, **Line** and **Box** tools, 1–5 px brushes (scroll on the screen
   to change size), right-click to erase, **Undo** (or Z), **Clear**, **Fill**,
@@ -161,11 +174,15 @@ Left click the bar icon to open the panel.
 - **Sleep when idle**: Never, 5, 10 (default), 30 or 60 minutes. After that
   long without input the OLED goes dark to spare it from burn-in, and wakes on
   the next keypress. Idle inhibitors (a playing video, stay-awake) keep it lit.
-- **Speed**: frame delay (also shown as fps).
+- **Speed**: frame delay (also shown as fps); hidden for info screens,
+  which keep their own pace.
 - **Allow keyboard access** (or U) appears only when the keyboard is present
   but not writable.
 - `omarchy-shell io.github.auxxed.steelseries-oled power` toggles the OLED;
-  `... sleepAfter 30` sets the idle timeout (0 turns it off).
+  `... sleepAfter 30` sets the idle timeout (0 turns it off); `... preset
+  info:clock` (or `omarchy`, `spin`, `screensaver:fireworks`, `info:system`,
+  `info:media`, `custom`...) switches what it shows; `... text HELLO`
+  renders and shows text.
 
 ## Remove
 
@@ -208,6 +225,10 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
   --render-text "HYPR" --style spin \
   --out-dir ~/.local/state/omarchy/steelseries-oled
+
+# An info screen in the foreground (clock, system or media)
+python3 -I ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
+  --watch --info clock
 ```
 
 `assets/omarchy-oled-128x40.gif` is the looping idle animation, with
@@ -223,7 +244,8 @@ ImageMagick; build time only). The `.png` is the same still, sized for SteelSeri
 if you ever set a static idle screen from Windows.
 
 Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
-`invert.frag`, `apply.py`, `make_gif.py`, `make_screensaver.py`, `udev/71-steelseries-apex-oled.rules`.
+`invert.frag`, `apply.py`, `make_gif.py`, `make_screensaver.py`, `udev/71-steelseries-apex-oled.rules`,
+`tests/`.
 
 ## How it works
 
@@ -237,12 +259,46 @@ so a shell restart never leaves a second stream fighting over the panel.
 The idle image lives in keyboard RAM. Firmware restores its own logo after a
 power cycle unless this service is running.
 
+Info screens are drawn by `apply.py --watch --info MODE` itself: ImageMagick
+rasterizes each string once in Omarchy Block and the result is cached, so
+the clock costs one render a minute and the stats draw from a small set of
+numbers. CPU load comes from `/proc/stat`, memory from `/proc/meminfo`, the
+temperature from the CPU's hwmon sensor (`coretemp`, `k10temp`...). The
+shell sends what is playing as one JSON line on the helper's stdin; while
+the panel is open the helper sends each frame back for the preview.
+
 Typed text goes through the same pipeline as a custom image: ImageMagick
 rasterizes it in the chosen font, thresholds it to 1-bit at 128×40, and
 `make_gif.py` turns that bitmap into an animation using the same per-letter
 segmentation and spin/wave math it uses for the bundled wordmark — just
 parameterized over however many letters were actually typed instead of a
 fixed "OMARCHY".
+
+## Files and safety
+
+All state lives in `~/.local/state/omarchy/steelseries-oled.json` and the
+0700 folder `~/.local/state/omarchy/steelseries-oled/`. Every read goes
+through one descriptor opened without following links and checked to be a
+small regular file of yours; every write is a fresh 0600 temporary renamed
+into place, so a link planted at a state path is replaced, never written
+through. The shell never touches those files itself: it asks `apply.py`
+(`--read-settings`, `--write-settings`, `--read-drawing`, `--write-drawing`,
+`--have`), always run as `/usr/bin/python3 -I` with absolute program paths,
+and collects helper output a chunk at a time up to a cap. A still drawing
+streams to the keyboard through the helper's stdin rather than a file. The
+only network fetch is the GIF library: HTTPS to `www.nlog.us` only, no
+redirects, 40 MB at most.
+
+## Development
+
+```sh
+python3 -I tests/test_apply.py      # state files, frames, info screens, streaming
+python3 -I tests/test_hardening.py  # plain-text QML, argv-only processes
+```
+
+No keyboard needed: the device is a recorder, `/proc` and `/sys` are fake
+files and the state goes to a throwaway folder. CI runs both, plus the
+shader and udev-rule checks.
 
 ## Marketplace
 

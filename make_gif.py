@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Build the looping 128x40 1-bit Omarchy OLED GIF from the static wordmark.
 
 Stdlib for the frame data. ImageMagick (`magick`) writes the .gif preview.
@@ -27,6 +27,7 @@ DELAY_MS = 100
 SPIN_DELAY_MS = 70
 WAVES_DELAY_MS = 60
 MAGIC = b"OLEDGIF1"
+MAGICK = "/usr/bin/magick"
 
 # Ink bounding boxes for O M A R C H Y on the current 128x40 wordmark.
 LETTERS = [
@@ -302,7 +303,7 @@ def write_gif(frames: list[bytes], path: str, delay_ms: int = DELAY_MS) -> None:
                 fh.write(frame)
             subprocess.check_call(
                 [
-                    "magick",
+                    MAGICK,
                     "-size",
                     f"{W}x{H}",
                     "-depth",
@@ -316,7 +317,7 @@ def write_gif(frames: list[bytes], path: str, delay_ms: int = DELAY_MS) -> None:
             pngs.append(png)
         subprocess.check_call(
             [
-                "magick",
+                MAGICK,
                 "-delay",
                 str(max(1, delay_ms // 10)),
                 "-loop",
