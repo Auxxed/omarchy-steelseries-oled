@@ -109,8 +109,9 @@ access later from the panel (**Allow access**, one polkit prompt) instead
 of the command line — see [Keyboard access](#keyboard-access) below.
 
 Runtime is `python3` (stdlib) for HID. Importing a custom GIF or still,
-typed text and the info screens need ImageMagick (`/usr/bin/magick`), which
-Omarchy already ships.
+typed text and the info screens need ImageMagick (`/usr/bin/magick`), and
+screensaver effects on typed text need `ttfx` (`/usr/bin/ttfx`, the engine
+behind Omarchy's screensaver). Omarchy ships both.
 
 ### Keyboard access
 
@@ -150,8 +151,10 @@ Left click the bar icon to open the panel.
   (png/jpg/webp/bmp, resized to 128×40 1-bit), or bring back your **Last
   image**. **Contrast** sets the 1-bit threshold for custom images.
 - **Text** tab: type your own text (rendered in Omarchy Block, caps only)
-  and pick a **style** (typewriter/static/spin/waves). **Show** switches the
-  OLED to it.
+  and pick a **style** (typewriter/static/spin/waves) or any of the 37
+  **screensaver effects**, which run on your text the way the screensaver
+  runs them on the logo. **All** plays every effect back to back in a random
+  order (about 15 seconds to render). **Show** switches the OLED to it.
 - **Info** tab: screens drawn live in Omarchy Block. **Clock**: the time and
   the date, nudged a pixel or two every minute so nothing burns in.
   **System**: CPU load, memory in use and the CPU temperature, as bars.
@@ -182,7 +185,37 @@ Left click the bar icon to open the panel.
   `... sleepAfter 30` sets the idle timeout (0 turns it off); `... preset
   info:clock` (or `omarchy`, `spin`, `screensaver:fireworks`, `info:system`,
   `info:media`, `custom`...) switches what it shows; `... text HELLO`
-  renders and shows text.
+  renders and shows text; `... textStyle screensaver:matrix` (or `spin`,
+  `screensaver` for all effects...) re-renders it in another style;
+  `... peak on` / `peak off` runs the Peak takeover (below).
+
+## Peak takeover
+
+With [QuickPuff](https://github.com/Auxxed/quickpuff) running, the OLED
+can follow a Puffco Peak's heat cycle:
+
+```sh
+omarchy-shell io.github.auxxed.steelseries-oled peak on    # take the OLED over
+omarchy-shell io.github.auxxed.steelseries-oled peak off   # hand it back
+```
+
+It shows the chamber temperature (in QuickPuff's °F or °C), HEATING, READY
+(reversed out) or COOLING, the seconds left in that phase, the heat
+profile's name and a bar for the phase. The countdown ticks every second
+between QuickPuff's updates.
+
+- `off` puts back exactly what was showing. The takeover is never saved, so
+  a shell restart also comes back on your own screen.
+- It ends by itself once the Peak has been out of a heat cycle for about
+  20 seconds, or QuickPuff has been out of reach that long, so it can't get
+  stuck on a stale screen if `off` never comes.
+- Picking a screen in the panel, turning the OLED off, or the OLED falling
+  asleep also ends it. It plays over **Follow screensaver**.
+- `peak on` answers `ok`, or why nothing happened: `oled is off`,
+  `oled is asleep`, `already on`. `peak off` answers `ok` or `not on`.
+
+`quickpuff demo` plays a pretend heat cycle through the daemon, so you can
+try it without heating anything.
 
 ## Remove
 
@@ -221,12 +254,14 @@ python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py --r
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
   --render-drawing "$(cat drawing.hex)" --style spin
 
-# Render typed text (style: typewriter/static/spin/waves)
+# Render typed text (style: typewriter/static/spin/waves, screensaver:<effect>,
+# or screensaver for every effect back to back; the effects need ttfx)
 python3 ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
   --render-text "HYPR" --style spin \
   --out-dir ~/.local/state/omarchy/steelseries-oled
 
-# An info screen in the foreground (clock, system or media)
+# An info screen in the foreground (clock, system or media, or peak for
+# the Peak takeover, which stops by itself ~20 s after the heat cycle)
 python3 -I ~/.config/omarchy/plugins/io.github.auxxed.steelseries-oled/apply.py \
   --watch --info clock
 ```
@@ -238,9 +273,9 @@ Regenerate all of them from the still wordmark with `python3 make_gif.py`
 (needs ImageMagick). `assets/screensaver/<effect>.frames` (one per effect,
 with a `.gif` preview) come from `python3 make_screensaver.py [effect ...]`,
 which records `ttfx` playing
-`~/.config/omarchy/branding/screensaver.txt` in a pseudo-terminal and
-rasterises each character cell onto the 128×40 panel (needs `ttfx` and
-ImageMagick; build time only). The `.png` is the same still, sized for SteelSeries GG
+`~/.config/omarchy/branding/screensaver.txt` on a canvas the size of the
+logo and rasterises each character cell onto the 128×40 panel (needs `ttfx`
+and ImageMagick). The `.png` is the same still, sized for SteelSeries GG
 if you ever set a static idle screen from Windows.
 
 Plugin files: `manifest.json`, `Service.qml`, `OledBarWidget.qml`, `OledPanel.qml`,
@@ -267,12 +302,28 @@ temperature from the CPU's hwmon sensor (`coretemp`, `k10temp`...). The
 shell sends what is playing as one JSON line on the helper's stdin; while
 the panel is open the helper sends each frame back for the preview.
 
+The Peak takeover is `apply.py --watch --info peak`. It reads QuickPuff
+itself, since it already owns the frame clock, the per-second countdown and
+the give-up timer. Its numbers change every second, so it rasterizes each
+character once (one magick run per size) and builds strings from those,
+with tabular digits that don't shift as they count. When the Peak has been
+idle or QuickPuff silent for ~20 s, it prints `{"type":"peak","state":"over"}`
+and the shell restarts the stream on your own preset. If the shell doesn't,
+the helper exits a few seconds later and the shell restores it then.
+
 Typed text goes through the same pipeline as a custom image: ImageMagick
 rasterizes it in the chosen font, thresholds it to 1-bit at 128×40, and
 `make_gif.py` turns that bitmap into an animation using the same per-letter
 segmentation and spin/wave math it uses for the bundled wordmark — just
 parameterized over however many letters were actually typed instead of a
 fixed "OMARCHY".
+A screensaver effect instead turns the bitmap into half-block art, one
+character cell per pixel column and two pixel rows, and runs `ttfx` on it
+with the same code that records the logo's loops (`make_screensaver.py`).
+Effects timed in frames run uncapped and take well under a second; Matrix
+and Thunderstorm are timed in seconds and take about ten. When an effect
+finishes, the text itself is held, since many effects settle on a gradient
+whose dark end is too dim for a 1-bit pixel.
 
 ## Files and safety
 
@@ -287,17 +338,21 @@ through. The shell never touches those files itself: it asks `apply.py`
 and collects helper output a chunk at a time up to a cap. A still drawing
 streams to the keyboard through the helper's stdin rather than a file. The
 only network fetch is the GIF library: HTTPS to `www.nlog.us` only, no
-redirects, 40 MB at most.
+redirects, 40 MB at most. The Peak takeover reads QuickPuff's local socket
+(`$XDG_RUNTIME_DIR/quickpuff.sock`, or `$QUICKPUFF_SOCKET`) and only ever
+asks it for `status`. The socket file and the process behind it must both be
+yours. A line over 1 MiB, or anything that isn't a JSON reply or event,
+drops the connection, which is retried with backoff.
 
 ## Development
 
 ```sh
-python3 -I tests/test_apply.py      # state files, frames, info screens, streaming
+python3 -I tests/test_apply.py      # state files, frames, info screens, Peak, streaming
 python3 -I tests/test_hardening.py  # plain-text QML, argv-only processes
 ```
 
 No keyboard needed: the device is a recorder, `/proc` and `/sys` are fake
-files and the state goes to a throwaway folder. CI runs both, plus the
+files, QuickPuff is a fake socket and the state goes to a throwaway folder. CI runs both, plus the
 shader and udev-rule checks.
 
 ## Marketplace

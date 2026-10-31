@@ -39,6 +39,18 @@ Item {
   property bool previewWanted: false
   onPreviewWantedChanged: sendInfo({ preview: previewWanted })
 
+  // Peak takeover (IPC `peak on|off`): apply.py --info peak shows a Puffco
+  // Peak's heat cycle, read from the QuickPuff daemon, over whatever is
+  // showing. Nothing else changes and this is never saved, so ending it
+  // (or a shell restart) brings back exactly the user's own screen. It
+  // ends on "off", on any change of screen, when the OLED is switched off
+  // or falls asleep, and by itself when apply.py says the Peak has been
+  // out of a heat cycle (or QuickPuff out of reach) for ~20 s.
+  property bool peakActive: false
+  // The stream reads JSON on stdin: an info screen, or the Peak.
+  readonly property bool streamReadsJson: peakActive || (isInfo && !idleSyncActive)
+  readonly property string showingLabel: peakActive ? "Puffco Peak" : sourceLabel
+
   // Create tab: a 128x40 1-bit drawing, painted in the panel and streamed
   // live. Pixels live here (not in the panel) so the drawing survives the
   // panel closing; drawRev bumps on every change since in-place array edits
@@ -72,9 +84,13 @@ Item {
   property bool drawRenderQueued: false
 
   // Custom typed text, rendered with the same typewriter/static/spin/waves
-  // styles as the bundled Omarchy wordmark (see apply.py's render_text()).
+  // styles as the bundled Omarchy wordmark (see apply.py's render_text()),
+  // or with the logo's screensaver effects: textStyle "screensaver:<effect>"
+  // for one, "screensaver" for all of them back to back.
   property string customText: ""
   property string textStyle: "typewriter"
+  // The style a text render in flight is producing, for the panel.
+  property string renderingTextStyle: ""
   property string textFont: "omarchy"
   property int textDelayMs: 100
   property bool hasText: false
@@ -106,8 +122,12 @@ Item {
   readonly property bool sleeping: sleepMinutes > 0 && idleMonitor.isIdle
   onSleepingChanged: {
     if (!settingsLoaded || !enabled) return
-    if (sleeping) stopWatch()
-    else startWatch()
+    if (sleeping) {
+      peakActive = false
+      stopWatch()
+    } else {
+      startWatch()
+    }
   }
 
   // Restarts are sequenced: the old helper must exit before the new one
@@ -293,6 +313,16 @@ Item {
     return name === "screensaver" ? "Screensaver" : "Screensaver: " + effectLabel(name.slice(12))
   }
 
+  function isTextStyle(style) {
+    return textStyleOrder.indexOf(style) !== -1 || isScreensaverPreset(style)
+  }
+
+  function textStyleLabel(style) {
+    if (style === "screensaver") return "All effects"
+    if (isScreensaverPreset(style)) return effectLabel(style.slice(12))
+    return style.charAt(0).toUpperCase() + style.slice(1)
+  }
+
   function shuffledEffects() {
     var out = screensaverEffects.slice()
     for (var i = out.length - 1; i > 0; i--) {
@@ -332,7 +362,11 @@ Item {
   function watchCommand() {
     var cmd = helperCommand(["--watch", "--delay-ms", String(idleSyncActive ? screensaverDelayMs : delayMs)])
     if (invert) cmd.push("--invert")
-    if (isInfo && !idleSyncActive) {
+    // The takeover outranks the screensaver too: it was asked for, and
+    // it ends by itself.
+    if (peakActive) {
+      cmd.push("--info", "peak")
+    } else if (isInfo && !idleSyncActive) {
       cmd.push("--info", infoMode)
     } else if (idleSyncActive || preset === "screensaver") {
       var effects = shuffledEffects()
@@ -376,7 +410,7 @@ Item {
   }
 
   function sendInfo(obj) {
-    if (isInfo && !idleSyncActive) sendToStream(JSON.stringify(obj))
+    if (streamReadsJson) sendToStream(JSON.stringify(obj))
   }
 
   // What is playing, for the "Now playing" screen: the first player that
@@ -397,7 +431,7 @@ Item {
       progress: Math.round(progress * 100) / 100
     } })
   }
-  onMediaLineChanged: if (infoMode === "media") sendInfo(JSON.parse(mediaLine))
+  onMediaLineChanged: if (infoMode === "media" && !peakActive) sendInfo(JSON.parse(mediaLine))
 
   // MPRIS positions only move when asked, so the bar along the bottom of
   // the screen is nudged once a second while something plays.
@@ -409,9 +443,9 @@ Item {
   }
 
   function streamStarted() {
-    if (!isInfo || idleSyncActive) return
+    if (!streamReadsJson) return
     sendInfo({ preview: previewWanted })
-    if (infoMode === "media") sendInfo(JSON.parse(mediaLine))
+    if (infoMode === "media" && !peakActive) sendInfo(JSON.parse(mediaLine))
   }
 
   function setEnabled(on) {
@@ -421,6 +455,7 @@ Item {
       return
     }
     enabled = on
+    if (!on) peakActive = false
     lastError = ""
     if (settingsLoaded) scheduleSave()
     if (on) startWatch()
@@ -429,6 +464,26 @@ Item {
 
   function toggleEnabled() {
     setEnabled(!enabled)
+  }
+
+  // "on" for the IPC: "ok", or why nothing happened.
+  function startPeak() {
+    if (!settingsLoaded || pluginDir === "") return "not ready"
+    if (!enabled) return "oled is off"
+    if (sleeping) return "oled is asleep"
+    if (peakActive) return "already on"
+    peakActive = true
+    lastError = ""
+    startWatch()
+    return "ok"
+  }
+
+  // Hand the OLED back: the stream restarts on the user's own preset.
+  function endPeak() {
+    if (!peakActive) return false
+    peakActive = false
+    startWatch()
+    return true
   }
 
   function startWatch() {
@@ -532,6 +587,7 @@ Item {
   function _renderText(text, style, font) {
     textStale = false
     pendingKind = "text"
+    renderingTextStyle = style
     pendingPreviewSuffix = textPreviewRev + 1
     lastError = ""
     importBusy = true
@@ -560,7 +616,7 @@ Item {
 
   function setTextStyle(style) {
     if (!hasText || pickProcess.running || importProcess.running) return
-    if (textStyleOrder.indexOf(style) === -1 || style === textStyle) return
+    if (!isTextStyle(style) || style === textStyle) return
     _renderText(customText, style, textFont)
   }
 
@@ -592,6 +648,8 @@ Item {
   function setPreset(name) {
     if (name !== "omarchy" && name !== "static" && name !== "spin" && name !== "waves" && !isScreensaverPreset(name) && name !== "text" && name !== "custom" && name !== "draw" && !isInfoPreset(name))
       name = "omarchy"
+    // Picking a screen ends a Peak takeover: what you chose shows now.
+    peakActive = false
     preset = name
     if (name === "spin") {
       sourceLabel = "Spin"
@@ -648,8 +706,9 @@ Item {
       if (idx !== null) _startWebGifImport(idx)
     } else if (scope === "text") {
       if (!hasText || pickProcess.running || importProcess.running) return
-      for (i = 0; i < textStyleOrder.length; i++)
-        if (!(isText && textStyleOrder[i] === textStyle)) pool.push(textStyleOrder[i])
+      var styles = textStyleOrder.concat(screensaverEffects.map(function(e) { return "screensaver:" + e }))
+      for (i = 0; i < styles.length; i++)
+        if (!(isText && styles[i] === textStyle)) pool.push(styles[i])
       var style = pick(pool)
       if (style === null) return
       if (isText) setTextStyle(style)
@@ -834,7 +893,8 @@ Item {
     drawRev++
     drawSaveTimer.start()
     if (!drawAnimated) {
-      if (!isDraw) setPreset("draw")
+      // Drawing over a Peak takeover ends it, like picking any screen.
+      if (!isDraw || peakActive) setPreset("draw")
       return
     }
     drawPreviewStale = true
@@ -1073,6 +1133,12 @@ Item {
       }
       return
     }
+    if (msg.type === "peak") {
+      // The Peak stream's own hand-back: out of a heat cycle, or QuickPuff
+      // out of reach, for ~20 s.
+      if (msg.state === "over") endPeak()
+      return
+    }
     if (msg.type === "status") {
       state = String(msg.state || "")
       devicePath = String(msg.path || "")
@@ -1176,7 +1242,7 @@ Item {
         if (obj && obj.delayMs !== undefined) delay = Math.max(50, Math.min(500, Math.round(Number(obj.delayMs))))
         if (obj && obj.sourceFile) srcFile = String(obj.sourceFile)
         if (obj && obj.text) txt = String(obj.text)
-        if (obj && obj.textStyle && textStyleOrder.indexOf(String(obj.textStyle)) !== -1) txtStyle = String(obj.textStyle)
+        if (obj && obj.textStyle && isTextStyle(String(obj.textStyle))) txtStyle = String(obj.textStyle)
         if (obj && obj.textFont && textFontOrder.indexOf(String(obj.textFont)) !== -1) txtFont = String(obj.textFont)
         else if (obj && obj.textFont && txt !== "") stale = true
         if (obj && obj.textDelayMs !== undefined) txtDelay = Math.max(50, Math.min(500, Math.round(Number(obj.textDelayMs))))
@@ -1525,6 +1591,13 @@ Item {
     onExited: {
       if (root.restartQueued) root.launchWatch()
       else if (root.releaseQueued) root.runRelease()
+      else if (root.peakActive) {
+        // A Peak stream that ends unasked (it exits a few seconds after
+        // asking for the hand-back, or it failed) takes the takeover with
+        // it: the user's own screen comes back now, not after a backoff.
+        root.peakActive = false
+        root.startWatch()
+      }
       else if (!root.stopping && root.enabled && !root.sleeping) {
         // apply.py waits for the keyboard itself, so an exit here is a crash.
         // One that keeps crashing within a minute waits twice as long each
@@ -1584,6 +1657,7 @@ Item {
     }
     onExited: function(code) {
       root.importBusy = false
+      root.renderingTextStyle = ""
       var out = root.takeOutput(importProcess)
       var err = importProcess.errBuf.trim()
       importProcess.errBuf = ""
@@ -1617,6 +1691,7 @@ Item {
           delay = Math.max(50, Math.min(500, Math.round(Number(msg.delay_ms))))
       } catch (e) {}
       root.keepDelayOnImport = false
+      root.peakActive = false
       root.preset = "custom"
       root.hasCustom = true
       root.sourceLabel = label
@@ -1665,12 +1740,32 @@ Item {
       root.setCustomText(value)
       return "rendering"
     }
+    // typewriter, static, spin, waves, screensaver or screensaver:<effect>.
+    function textStyle(name: string): string {
+      if (!root.isTextStyle(name)) return "unknown style"
+      if (!root.hasText) return "no text yet"
+      if (root.importBusy || root.pickBusy) return "busy"
+      if (name === root.textStyle) {
+        root.useText()
+        return "showing"
+      }
+      root.setTextStyle(name)
+      return "rendering"
+    }
     function preset(name: string): string {
       var ok = root.bundledOrder.indexOf(name) !== -1 || root.isScreensaverPreset(name) || root.isInfoPreset(name)
         || (name === "custom" && root.hasCustom) || (name === "text" && root.hasText) || (name === "draw" && root.hasDrawing)
       if (!ok) return "unknown preset"
       root.setPreset(name)
       return root.preset
+    }
+    // "on": a Puffco Peak's heat cycle (from QuickPuff) takes the OLED over
+    // until "off", or until the Peak has been out of a heat cycle for ~20 s.
+    // Never saved; "off" brings back what was showing. "ok" or a reason.
+    function peak(state: string): string {
+      if (state === "on") return root.startPeak()
+      if (state === "off") return root.endPeak() ? "ok" : "not on"
+      return "use on or off"
     }
   }
 

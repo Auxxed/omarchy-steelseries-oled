@@ -2,12 +2,15 @@
 """Write the Omarchy wordmark (static or looping GIF) to a SteelSeries Apex OLED.
 
 Stdlib only, plus ImageMagick (/usr/bin/magick) for imports, text and the
-info screens. Talks to the vendor HID interface over hidraw.
+info screens, and ttfx (/usr/bin/ttfx) for screensaver effects on text.
+Talks to the vendor HID interface over hidraw.
 
 Streaming (the shell keeps one of these running):
   apply.py --watch [--invert] --frames F [--frames F ...] --rest R [--delay-ms N]
   apply.py --watch --live - [--live-hex HEX]   frames as hex lines on stdin
   apply.py --watch --info clock|system|media   media details as JSON on stdin
+  apply.py --watch --info peak                 a Puffco Peak heat cycle, read
+                                               from QuickPuff's daemon socket
 
 One-shot jobs for the panel, each printing one JSON line:
   --import PATH | --import-url URL, --render-text TEXT, --render-drawing HEX
@@ -27,9 +30,11 @@ from __future__ import annotations
 import errno
 import glob
 import json
+import math
 import os
 import re
 import select
+import socket
 import stat
 import struct
 import subprocess
@@ -81,7 +86,13 @@ TEXT_FONTS = {
 DEFAULT_TEXT_FONT = "omarchy"
 MAX_TEXT_CHARS = 24
 TEXT_STYLES = {"typewriter", "static", "spin", "waves"}
+# Text can also play the logo's screensaver effects: "screensaver:<effect>"
+# for one, "screensaver" for every one back to back (make_screensaver.EFFECTS).
+SCREENSAVER_STYLE = "screensaver"
 INFO_MODES = ("clock", "system", "media")
+# --info peak: the Puffco Peak takeover (see Peak). Never a saved preset;
+# the shell runs it over whatever is showing and then puts that back.
+PEAK_MODE = "peak"
 
 
 # --- files ---------------------------------------------------------------------
@@ -516,6 +527,49 @@ def render_drawing(
     return result
 
 
+def text_style(style: str) -> str:
+    """style if text can be rendered in it, else the default."""
+    import make_screensaver
+
+    if style in TEXT_STYLES or style == SCREENSAVER_STYLE:
+        return style
+    prefix = SCREENSAVER_STYLE + ":"
+    if style.startswith(prefix) and style[len(prefix):] in make_screensaver.EFFECTS:
+        return style
+    return "typewriter"
+
+
+def animate_screensaver(blob: bytes, style: str) -> tuple[list[bytes], int, list[bytes]]:
+    """The logo's screensaver effects on any 128x40 bitmap, as frames, their
+    delay and the frames to preview. The bitmap becomes half-block art that
+    ttfx animates like the logo. "screensaver" plays every effect back to back
+    in a random order (rendered in parallel); its preview is decrypt alone."""
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+
+    import make_gif
+    import make_screensaver as ms
+
+    if not os.access(ms.TTFX, os.X_OK):
+        raise SystemExit("screensaver effects need ttfx")
+    if style == SCREENSAVER_STYLE:
+        effects = list(ms.EFFECTS)
+        random.shuffle(effects)
+    else:
+        effects = [style.split(":", 1)[1]]
+    art, top = ms.bitmap_art(make_gif.unpack(blob))
+    rows = OLED_H // 2
+    with tempfile.TemporaryDirectory() as tmp:
+        art_path = os.path.join(tmp, "art.txt")
+        with open(art_path, "x", encoding="utf-8") as fh:
+            fh.write(art)
+        workers = max(1, min(len(effects), os.cpu_count() or 1, 8))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            loops = dict(zip(effects, pool.map(lambda e: ms.effect_frames(e, art_path, OLED_W, rows, top, blob), effects)))
+    frames = [frame for effect in effects for frame in loops[effect]]
+    return frames, ms.DELAY_MS, loops.get("decrypt", loops[effects[0]])
+
+
 def render_text(
     text: str,
     style: str,
@@ -523,15 +577,18 @@ def render_text(
     font: str = DEFAULT_TEXT_FONT,
     preview_suffix: str | None = None,
 ) -> dict[str, object]:
-    if style not in TEXT_STYLES:
-        style = "typewriter"
+    style = text_style(style)
     if font not in TEXT_FONTS:
         font = DEFAULT_TEXT_FONT
     blob = render_text_bitmap(text, font)
-    frames, delay_ms = animate_bitmap(blob, style)
+    if style.startswith(SCREENSAVER_STYLE):
+        frames, delay_ms, preview = animate_screensaver(blob, style)
+    else:
+        frames, delay_ms = animate_bitmap(blob, style)
+        preview = frames
     ensure_private_dir(out_dir)
     save_animation(out_dir, "text", frames, delay_ms, blob)
-    write_preview(frames, delay_ms, out_dir, "text-preview", preview_suffix, MAGICK)
+    write_preview(preview, delay_ms, out_dir, "text-preview", preview_suffix, MAGICK)
     result = {
         "type": "text",
         "label": text,
@@ -751,7 +808,8 @@ class Canvas:
     def __init__(self):
         self.pix = bytearray(OLED_W * OLED_H)
 
-    def blit(self, glyph: tuple[int, int, bytes], x: int, y: int) -> None:
+    def blit(self, glyph: tuple[int, int, bytes], x: int, y: int, value: int = 1) -> None:
+        """Set the glyph's ink to value: 1 draws it, 0 cuts it out of a fill."""
         w, h, bits = glyph
         for gy in range(h):
             yy = y + gy
@@ -761,7 +819,7 @@ class Canvas:
             for gx in range(w):
                 xx = x + gx
                 if 0 <= xx < OLED_W and bits[row + gx]:
-                    self.pix[yy * OLED_W + xx] = 1
+                    self.pix[yy * OLED_W + xx] = value
 
     def rect(self, x: int, y: int, w: int, h: int, fill: bool = True) -> None:
         for yy in range(max(0, y), min(OLED_H, y + h)):
@@ -1004,11 +1062,503 @@ class Info:
             canvas.rect(OLED_W - 4, OLED_H - 13, 2, 7)
 
 
+# --- the Peak takeover -------------------------------------------------------------
+
+QUICKPUFF_SOCKET = "quickpuff.sock"
+# One status line is several KB (it carries telemetry). A line longer than
+# this, or a buffer that grows past it without a newline, drops the link.
+PEAK_MAX_LINE = 1 << 20
+# The only thing ever sent to the daemon.
+PEAK_STATUS_REQUEST = b'{"id":1,"cmd":"status","args":{}}\n'
+# Reconnect delays after a missing socket or a dropped connection.
+PEAK_RETRY_S = (0.5, 1.0, 2.0, 4.0)
+# How long a fresh connection waits for its first reply, so the first frame
+# already shows the Peak (the daemon answers in a few ms).
+PEAK_FIRST_REPLY_S = 0.25
+# operating_state_id through a heat cycle, and the word shown for each.
+PEAK_WORDS = {7: "HEATING", 8: "READY", 9: "COOLING"}
+PEAK_READY = 8
+PEAK_IDLE = 5
+# The takeover hands the OLED back once the Peak has been out of a heat
+# cycle (or the daemon out of reach) this long, and exits by itself if the
+# shell hasn't replaced it this long after saying so.
+PEAK_GIVE_UP_S = 20.0
+PEAK_HANDBACK_S = 5.0
+# The socket is read every tick; a frame goes out only when the picture
+# changes (and twice a second regardless, like any still).
+PEAK_TICK_S = 0.1
+# A reading up to this far behind the local countdown doesn't wind it back.
+PEAK_JITTER_S = 1.5
+# Inside the progress bar's outline.
+PEAK_BAR_W = OLED_W - 4
+GLYPH_CHARS = "".join(chr(c) for c in range(0x21, 0x7F) if not chr(c).islower())
+PEAK_DIGITS = "0123456789-"
+# role: (point size, characters it needs)
+PEAK_TYPE = {
+    "temp": (26, PEAK_DIGITS),
+    "time": (18, PEAK_DIGITS + ":"),
+    "unit": (14, "FC"),
+    "word": (11, GLYPH_CHARS),
+}
+
+
+class Glyphs:
+    """Omarchy Block at one size as single characters, for text that changes
+    every second (the Peak's temperature and countdown) without running
+    magick for each new string. One magick run rasterizes the whole set,
+    each glyph cut to its ink left and right but kept at the font's full
+    line height, so they share a baseline. Strings are put together here
+    with the font's own spacing, measured from "00" and "0 0"; digits can
+    be tabular (each in the widest digit's cell) so a number doesn't shift
+    sideways as it counts. Characters the font lacks are left out."""
+
+    def __init__(self, size: int, chars: str = GLYPH_CHARS, font: str = TEXT_FONTS[DEFAULT_TEXT_FONT], render=None):
+        self.size = size
+        self.chars = chars
+        self.font = font
+        self.render = render or self.magick_render
+        self.shapes: dict[str, tuple[int, int, bytes]] | None = None
+        self.h = self.gap = self.space = self.digit_w = self.cap_top = self.cap_h = 0
+
+    def load(self) -> None:
+        if self.shapes is not None:
+            return
+        try:
+            shapes = self.render(list(self.chars) + ["00", "0 0"], self.size)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            shapes = {}
+        pair, spaced = shapes.pop("00", None), shapes.pop("0 0", None)
+        self.shapes = {ch: shape for ch, shape in shapes.items() if len(ch) == 1}
+        if not self.shapes:
+            return
+        self.h = max(shape[1] for shape in self.shapes.values())
+        zero = self.shapes.get("0")
+        zero_w = zero[0] if zero else 0
+        self.gap = max(1, pair[0] - 2 * zero_w) if pair and zero else max(1, self.size // 9)
+        self.space = max(2, spaced[0] - 2 * zero_w) if spaced and zero else self.size // 3
+        self.digit_w = max((self.shapes[d][0] for d in "0123456789" if d in self.shapes), default=0)
+        # The cap box (where "0" has ink), for placing text by its top.
+        ref = zero or next(iter(self.shapes.values()))
+        rows = [y for y in range(ref[1]) if any(ref[2][y * ref[0]:(y + 1) * ref[0]])]
+        self.cap_top = rows[0] if rows else 0
+        self.cap_h = rows[-1] - rows[0] + 1 if rows else ref[1]
+
+    def text(self, text: str, tabular: bool = False) -> tuple[int, int, bytes]:
+        """text as one glyph, w x h at the full line height."""
+        self.load()
+        placed: list[tuple[int, tuple[int, int, bytes]]] = []
+        x, joined = 0, False
+        for ch in text:
+            if ch == " ":
+                x, joined = x + self.space, False
+                continue
+            shape = (self.shapes or {}).get(ch)
+            if shape is None:
+                continue
+            cell = self.digit_w if tabular and ch.isdigit() else shape[0]
+            x += self.gap if joined else 0
+            placed.append((x + (cell - shape[0]) // 2, shape))
+            x, joined = x + cell, True
+        w, h = x, self.h
+        bits = bytearray(w * h)
+        for left, (gw, gh, gbits) in placed:
+            for gy in range(min(gh, h)):
+                bits[gy * w + left:gy * w + left + gw] = gbits[gy * gw:(gy + 1) * gw]
+        return w, h, bytes(bits)
+
+    def draw(self, canvas: Canvas, shape: tuple[int, int, bytes], x: int, top: int, value: int = 1) -> None:
+        """Blit a text() result with its cap height starting at row top."""
+        canvas.blit(shape, x, top - self.cap_top, value)
+
+    def fit(self, text: str, width: int) -> str:
+        """text cut to width at most: what the font can draw, a bracketed
+        tail dropped first ("HASH (FLAVOR)" -> "HASH"), then characters off
+        the end."""
+        self.load()
+
+        def drawable(value: str) -> str:
+            return " ".join("".join(ch for ch in value if ch == " " or ch in (self.shapes or {})).split())
+
+        out = drawable(text)
+        if self.text(out)[0] > width:
+            head = drawable(re.split(r"[(\[{]", text, maxsplit=1)[0])
+            if head:
+                out = head
+        while out and self.text(out)[0] > width:
+            out = out[:-1].rstrip()
+        return out
+
+    def magick_render(self, texts: list[str], size: int) -> dict[str, tuple[int, int, bytes]]:
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = []
+            for i, text in enumerate(texts):
+                path = os.path.join(tmp, f"{i}.txt")
+                with open(path, "x", encoding="utf-8") as fh:
+                    fh.write(text)
+                labels.append(f"label:@{path}")
+            out = subprocess.run(
+                [MAGICK, "-background", "black", "-fill", "white", "-font", self.font, "-pointsize", str(size),
+                 *labels, "-alpha", "remove", "-alpha", "off", "-colorspace", "Gray", "-threshold", "50%",
+                 "-define", "trim:edges=east,west", "-trim", "+repage", "-depth", "8",
+                 "-format", "%w %h\n", "-write", "info:-", "gray:-"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=True,
+            ).stdout
+        parts = out.split(b"\n", len(texts))
+        if len(parts) != len(texts) + 1:
+            raise ValueError("short magick output")
+        body, offset, shapes = parts[-1], 0, {}
+        for text, head in zip(texts, parts[:-1]):
+            w, h = (int(v) for v in head.split())
+            if w > 512 or h > 64:
+                raise ValueError("glyph too large")
+            raw = body[offset:offset + w * h]
+            offset += w * h
+            if len(raw) != w * h:
+                raise ValueError("short magick output")
+            ink = bytes(1 if b >= 128 else 0 for b in raw)
+            # A character the font lacks comes back as a blank 1x1.
+            if any(ink):
+                shapes[text] = (w, h, ink)
+        return shapes
+
+
+def quickpuff_socket() -> str:
+    """Where QuickPuff's daemon listens: $QUICKPUFF_SOCKET, as the daemon
+    itself reads it, else quickpuff.sock in the runtime directory."""
+    override = os.environ.get("QUICKPUFF_SOCKET")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.geteuid()}"
+    return os.path.join(runtime, QUICKPUFF_SOCKET)
+
+
+def peer_uid(sock: socket.socket) -> int | None:
+    """The uid of the process at the other end, as the kernel reports it."""
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        return struct.unpack("3i", creds)[1]
+    except (OSError, AttributeError, struct.error):
+        return None
+
+
+def peak_status(line: bytes) -> dict | None:
+    """The status a daemon line carries: the reply to `status`, or a status
+    event. None for any other well-formed line (a notify event, an error
+    reply). Raises ValueError for anything malformed."""
+    try:
+        msg = json.loads(line.decode("utf-8"))
+    except RecursionError:
+        raise ValueError("nested too deep")
+    if not isinstance(msg, dict):
+        raise ValueError("not an object")
+    if "event" in msg:
+        if msg["event"] != "status":
+            return None
+        data = msg.get("data")
+    elif "ok" in msg:
+        if msg["ok"] is not True:
+            return None
+        data = msg.get("result")
+    else:
+        raise ValueError("neither a reply nor an event")
+    if not isinstance(data, dict):
+        raise ValueError("status is not an object")
+    return data
+
+
+class PeakLink:
+    """A read-only client for QuickPuff's daemon. Each connection asks for
+    the status once; after that the daemon pushes a status event whenever
+    it changes (every 0.7 s while the Peak heats). Nothing but that one
+    request is ever sent. The socket file and the process behind it must
+    both be ours. A line past max_line, or one that isn't a JSON reply or
+    event, drops the connection; a missing or dropped socket is retried
+    with backoff."""
+
+    def __init__(self, path: str | None = None, max_line: int = PEAK_MAX_LINE):
+        self.path = path
+        self.max_line = max_line
+        self.sock: socket.socket | None = None
+        self.buf = b""
+        self.failures = 0
+        self.retry_at = 0.0
+
+    @property
+    def up(self) -> bool:
+        return self.sock is not None
+
+    def connect(self) -> bool:
+        path = self.path or quickpuff_socket()
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return False
+        if not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.geteuid():
+            return False
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.setblocking(False)
+            sock.connect(path)
+            if peer_uid(sock) != os.geteuid():
+                raise OSError(errno.EPERM, "not our daemon")
+            if sock.send(PEAK_STATUS_REQUEST) != len(PEAK_STATUS_REQUEST):
+                raise OSError(errno.EAGAIN, "short write")
+            select.select([sock], [], [], PEAK_FIRST_REPLY_S)
+        except OSError:
+            sock.close()
+            return False
+        self.sock, self.buf = sock, b""
+        return True
+
+    def close(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+        self.sock, self.buf = None, b""
+
+    def drop(self, now: float) -> None:
+        self.close()
+        self.failures += 1
+        self.retry_at = now + PEAK_RETRY_S[min(self.failures, len(PEAK_RETRY_S)) - 1]
+
+    def poll(self, now: float) -> list[dict]:
+        """Every status that arrived since the last poll, oldest first."""
+        if self.sock is None:
+            if now < self.retry_at:
+                return []
+            if not self.connect():
+                self.drop(now)
+                return []
+        out: list[dict] = []
+        budget = 4 * self.max_line
+        while budget > 0 and self.sock is not None:
+            try:
+                chunk = self.sock.recv(65536)
+            except BlockingIOError:
+                break
+            except OSError:
+                chunk = b""
+            if not chunk:
+                self.drop(now)
+                break
+            budget -= len(chunk)
+            lines = (self.buf + chunk).split(b"\n")
+            self.buf = lines.pop()
+            for line in lines:
+                try:
+                    if len(line) > self.max_line:
+                        raise ValueError("line too long")
+                    status = peak_status(line)
+                except ValueError:
+                    self.drop(now)
+                    return out
+                if status is not None:
+                    out.append(status)
+                    self.failures = 0
+            if len(self.buf) > self.max_line:
+                self.drop(now)
+        return out
+
+
+def bounded_number(value: object, lo: float, hi: float) -> float | None:
+    """value as a float if it is a finite number in [lo, hi], else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and lo <= number <= hi else None
+
+
+def profile_name(status: dict) -> str | None:
+    """The name of the selected heat profile; None if the status has no
+    profile list (keep the last one), "" if none matches."""
+    index, profiles = status.get("current_profile"), status.get("profiles")
+    if not isinstance(profiles, list):
+        return None
+    if isinstance(index, bool) or not isinstance(index, int):
+        return ""
+    for profile in profiles[:32]:
+        if isinstance(profile, dict) and profile.get("index") == index and not isinstance(profile.get("index"), bool):
+            return clean_label(profile.get("name"), 24)
+    return ""
+
+
+class Peak:
+    """The Peak takeover: the chamber temperature big, what the heater is
+    doing, the seconds left in that phase (counted down here between the
+    daemon's updates), the heat profile and a bar for the phase, read from
+    QuickPuff (PeakLink). Once the Peak has been out of a heat cycle for
+    PEAK_GIVE_UP_S, or nothing has come from the daemon that long, it says
+    {"type": "peak", "state": "over"} on stdout for the shell to put back
+    what was showing, and stops by itself if that hasn't happened
+    PEAK_HANDBACK_S later. Still between changes: a frame goes out when the
+    picture changes, and twice a second regardless."""
+
+    def __init__(self, link: PeakLink | None = None, fonts: dict[str, Glyphs] | None = None,
+                 clock=time.monotonic, invert: bool = False):
+        self.link = link if link is not None else PeakLink()
+        self.fonts = fonts or {role: Glyphs(size, chars) for role, (size, chars) in PEAK_TYPE.items()}
+        self.invert = invert
+        self.tick = PEAK_TICK_S
+        self.still = True
+        self.preview = False
+        # Starting counts as heat seen: the Peak gets the full wait to show up.
+        self.heat_seen = clock()
+        self.heard_at: float | None = None
+        self.heated = False
+        self.over_at: float | None = None
+        self.done = False
+        self.connected = False
+        self.state: int | None = None
+        self.label = ""
+        self.units = "F"
+        self.temp_f: float | None = None
+        self.temp_c: float | None = None
+        self.profile = ""
+        # The phase's countdown: when it reaches zero (monotonic), its length.
+        self.deadline: float | None = None
+        self.total: float | None = None
+        self.timer_state: int | None = None
+        self.drawn: tuple | None = None
+        self.plain = bytes(PAYLOAD_BYTES)
+
+    def feed(self, line: str) -> bool:
+        # Only the panel's preview switch arrives on stdin.
+        try:
+            msg = json.loads(line)
+        except (ValueError, RecursionError):
+            return False
+        if isinstance(msg, dict) and isinstance(msg.get("preview"), bool):
+            self.preview = msg["preview"]
+            return self.preview
+        return False
+
+    def take(self, status: dict, now: float) -> None:
+        """One status from the daemon, checked field by field."""
+        self.heard_at = now
+        ui = status.get("ui")
+        # Only the reply to `status` carries the shell's settings.
+        if isinstance(ui, dict) and ui.get("units") in ("F", "C"):
+            self.units = ui["units"]
+        self.connected = status.get("connected") is True
+        state = status.get("operating_state_id")
+        self.state = state if self.connected and isinstance(state, int) and not isinstance(state, bool) else None
+        self.label = clean_label(status.get("operating_state"), 12)
+        self.temp_f = bounded_number(status.get("heater_temp_f"), -100, 1500)
+        self.temp_c = bounded_number(status.get("heater_temp_c"), -100, 900)
+        name = profile_name(status)
+        if name is not None:
+            self.profile = name
+        if self.state in PEAK_WORDS:
+            self.heat_seen = now
+            self.heated = True
+        elapsed = bounded_number(status.get("state_elapsed_s"), 0, 86400)
+        total = bounded_number(status.get("state_total_s"), 0, 86400)
+        if self.state is None or elapsed is None or total is None:
+            self.deadline = self.total = self.timer_state = None
+            return
+        deadline = now + max(0.0, total - elapsed)
+        # A reading a beat behind the local tick (the Peak counts whole
+        # seconds) must not wind the countdown back up; a real change of
+        # plan (a boost, a new phase) does.
+        if (self.deadline is not None and self.timer_state == self.state and self.total == total
+                and self.deadline < deadline < self.deadline + PEAK_JITTER_S):
+            deadline = self.deadline
+        self.deadline, self.total, self.timer_state = deadline, total, self.state
+
+    def poll(self, now: float) -> bool:
+        """Read the daemon, check whether it is time to hand back, and say
+        whether the picture changed."""
+        for status in self.link.poll(now):
+            self.take(status, now)
+        if self.over_at is None and now - self.heat_seen >= PEAK_GIVE_UP_S:
+            self.over_at = now
+            heard = self.heard_at is not None and now - self.heard_at < PEAK_GIVE_UP_S
+            emit_peak("over", reason="not-heating" if heard else "unreachable")
+        if self.over_at is not None and now - self.over_at >= PEAK_HANDBACK_S:
+            self.done = True
+        return self.view(now) != self.drawn
+
+    def view(self, now: float) -> tuple:
+        """Everything the frame shows, as of now: (word, inverted?, temperature,
+        units, countdown, bar fill in pixels, profile)."""
+        if not self.link.up or self.heard_at is None:
+            return ("OFFLINE" if not self.link.up else "PEAK", False, None, self.units, None, None, "")
+        if not self.connected:
+            return ("NO PEAK", False, None, self.units, None, None, self.profile)
+        word = PEAK_WORDS.get(self.state)
+        if word is None:
+            word = "DONE" if self.heated and self.state == PEAK_IDLE else (self.label or "IDLE")
+        temp = self.temp_c if self.units == "C" else self.temp_f
+        countdown = filled = None
+        if self.deadline is not None:
+            left = max(0.0, self.deadline - now)
+            seconds = min(99 * 60 + 59, math.ceil(left - 1e-6) if left > 0 else 0)
+            countdown = f"{seconds // 60}:{seconds % 60:02d}"
+            if self.total:
+                filled = round(PEAK_BAR_W * max(0.0, min(1.0, 1 - left / self.total)))
+        temp_text = str(math.floor(temp + 0.5)) if temp is not None else None
+        return (word, self.state == PEAK_READY, temp_text, self.units, countdown, filled, self.profile)
+
+    def frame(self, now: float) -> bytes:
+        view = self.view(now)
+        if view != self.drawn:
+            canvas = Canvas()
+            self.draw(canvas, view)
+            # The panel draws the plain frame and inverts it with its own shader.
+            self.plain = canvas.pack()
+            self.drawn = view
+        return invert_payload(self.plain) if self.invert else self.plain
+
+    def draw(self, canvas: Canvas, view: tuple) -> None:
+        word, badge, temp, units, countdown, filled, profile = view
+        small, big, unit, clock = (self.fonts[k] for k in ("word", "temp", "unit", "time"))
+        # Top row: the heater's state (READY reversed out of a block), and
+        # the profile's name on the right in whatever room is left.
+        label = small.text(word)
+        if badge:
+            canvas.rect(0, 0, label[0] + 4, small.cap_h + 2)
+            small.draw(canvas, label, 2, 1, value=0)
+            right = label[0] + 4
+        else:
+            small.draw(canvas, label, 0, 1)
+            right = label[0]
+        name = small.fit(profile, OLED_W - right - 6)
+        if name:
+            shape = small.text(name)
+            small.draw(canvas, shape, OLED_W - shape[0], 1)
+        # The chamber, a degree mark and the unit (--- with no reading),
+        # centred between the top row and the bar.
+        digits = big.text(temp or "---", tabular=True)
+        row = small.cap_h + 2
+        bar = OLED_H - 6
+        top = row + max(1, (bar - row - big.cap_h) // 2)
+        big.draw(canvas, digits, 0, top)
+        x = digits[0] + 2
+        canvas.rect(x, top, 6, 6, fill=False)
+        canvas.rect(x + 1, top + 1, 4, 4, fill=False)
+        unit.draw(canvas, unit.text(units), x + 8, top)
+        # Seconds left, right-aligned on the temperature's baseline.
+        if countdown:
+            shape = clock.text(countdown, tabular=True)
+            clock.draw(canvas, shape, OLED_W - shape[0], top + big.cap_h - clock.cap_h)
+        # The phase so far.
+        canvas.rect(0, bar, OLED_W, OLED_H - bar, fill=False)
+        if filled:
+            canvas.rect(2, bar + 2, filled, OLED_H - bar - 4)
+
+
 # --- streaming -------------------------------------------------------------------
 
 
 def emit(state: str, **fields: object) -> None:
     payload: dict[str, object] = {"type": "status", "state": state}
+    payload.update(fields)
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+
+def emit_peak(state: str, **fields: object) -> None:
+    """The Peak takeover's news for the shell: "over" means put back what
+    was showing before."""
+    payload: dict[str, object] = {"type": "peak", "state": state}
     payload.update(fields)
     print(json.dumps(payload, separators=(",", ":")), flush=True)
 
@@ -1063,9 +1613,17 @@ def watch(source, stdin: StdinLines | None = None) -> None:
     fd: int | None = None
     path: str | None = None
     next_frame = time.monotonic()
+    # A source with something of its own to watch (the Peak's socket) is
+    # polled every pass, keyboard or not, and can end the stream.
+    poll = getattr(source, "poll", None)
     while True:
         if os.getppid() != parent or (stdin is not None and stdin.closed):
             return
+        if poll is not None:
+            if poll(time.monotonic()):
+                dirty = True
+            if getattr(source, "done", False):
+                return
         # Scanning sysfs costs ~2 ms, so only do it while there's no open
         # device; an unplug or replug surfaces as a failed write instead.
         if fd is None:
@@ -1269,8 +1827,11 @@ def main() -> None:
     if info_opt is not None:
         if not watch_mode:
             raise SystemExit("--info needs --watch")
+        if info_opt == PEAK_MODE:
+            watch(Peak(invert=invert), StdinLines())
+            return
         if info_opt not in INFO_MODES:
-            raise SystemExit("--info is one of " + ", ".join(INFO_MODES))
+            raise SystemExit("--info is one of " + ", ".join(INFO_MODES + (PEAK_MODE,)))
         watch(Info(info_opt, invert=invert), StdinLines())
         return
     if live_opt is not None:

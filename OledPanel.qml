@@ -20,6 +20,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool canOpen: bar !== null && anchorItem !== null
   readonly property bool busy: ready && (oled.importBusy || oled.pickBusy)
+  // The text style a render in flight is producing, else the current one.
+  readonly property string shownTextStyle: ready ? (oled.renderingTextStyle !== "" ? oled.renderingTextStyle : oled.textStyle) : ""
 
   // Which source tab is showing. Follows whatever is playing each time the
   // panel opens; switching tabs on its own never changes the OLED.
@@ -40,11 +42,13 @@ Panel {
   // over while the cursor is on the stage, before the first render, or
   // when the drawing isn't on the OLED yet.
   readonly property bool animatedPreview: ready && oled.isDraw && oled.drawAnimated && !oled.drawPreviewStale
-  readonly property bool showCanvas: ready && (creating || oled.isDraw || oled.isInfo)
-    && (!animatedPreview || (creating && (painter.containsMouse || painter.pressed)))
-  // An info screen is drawn by apply.py; the panel shows the frames it
-  // sends back. Everything else on the canvas is the drawing.
-  readonly property bool showInfoFrame: ready && oled.isInfo && !creating
+  readonly property bool showCanvas: ready && ((oled.peakActive && !creating)
+    || ((creating || oled.isDraw || oled.isInfo)
+      && (!animatedPreview || (creating && (painter.containsMouse || painter.pressed)))))
+  // An info screen (or a Peak takeover over any preset) is drawn by
+  // apply.py; the panel shows the frames it sends back. Everything else on
+  // the canvas is the drawing.
+  readonly property bool showInfoFrame: ready && (oled.isInfo || oled.peakActive) && !creating
   property string drawTool: "pen"
   property int brush: 1
   readonly property var drawTools: [
@@ -398,7 +402,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     textFormat: Text.PlainText
                     text: root.live
-                      ? (root.oled.idleSyncActive ? "IDLE" : "LIVE")
+                      ? (root.oled.idleSyncActive && !root.oled.peakActive ? "IDLE" : "LIVE")
                       : (root.ready ? root.oled.statusLabel.toUpperCase() : "")
                     color: Util.alpha("#ffffff", 0.8)
                     font.family: root.fontFamily
@@ -426,7 +430,7 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                text: root.ready && root.oled.idleSyncActive ? "FOLLOWING SCREENSAVER" : "NOW PLAYING"
+                text: root.ready && root.oled.idleSyncActive && !root.oled.peakActive ? "FOLLOWING SCREENSAVER" : "NOW PLAYING"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -439,7 +443,7 @@ Panel {
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
                 text: root.ready
-                  ? (root.oled.idleSyncActive ? "All effects, shuffled" : root.oled.sourceLabel)
+                  ? (root.oled.idleSyncActive && !root.oled.peakActive ? "All effects, shuffled" : root.oled.showingLabel)
                   : ""
                 color: root.foreground
                 font.family: root.fontFamily
@@ -578,94 +582,12 @@ Panel {
           }
 
           // Effects: every ttfx screensaver effect as a chip.
-          Column {
+          EffectPicker {
             width: parent.width
-            spacing: Style.space(8)
             visible: root.tab === "effects"
-
-            Row {
-              width: parent.width
-              spacing: Style.space(6)
-
-              TextField {
-                id: effectFilter
-                width: parent.width - shuffleAllButton.width - parent.spacing
-                placeholderText: "Search 37 effects…"
-                foreground: root.foreground
-                font.family: root.fontFamily
-                Keys.onEscapePressed: text = ""
-              }
-
-              Button {
-                id: shuffleAllButton
-                iconText: "\uF074"
-                text: "All"
-                tooltipText: "Every effect, shuffled — like the real screensaver"
-                selected: root.ready && root.oled.preset === "screensaver"
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: if (root.ready) root.oled.setPreset("screensaver")
-              }
-            }
-
-            Flickable {
-              id: effectScroll
-              width: parent.width
-              // Whole rows, plus half of the next as the cue that it scrolls.
-              readonly property real rowStep: effectFlow.children.length > 1 ? effectFlow.children[0].height + effectFlow.spacing : 1
-              height: Math.min(effectFlow.implicitHeight, rowStep * 5.5)
-              contentWidth: width
-              contentHeight: effectFlow.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              interactive: contentHeight > height
-
-              // A three-column grid of equal cells reads as a list to pick
-              // from; free-width pills wrapped into a ragged wall.
-              Grid {
-                id: effectFlow
-                width: effectScroll.width
-                columns: 3
-                spacing: Style.space(5)
-                readonly property real cell: (width - spacing * (columns - 1)) / columns
-
-                Repeater {
-                  model: {
-                    if (!root.ready) return []
-                    var q = effectFilter.text.trim().toLowerCase()
-                    var all = root.oled.screensaverEffects
-                    var out = []
-                    for (var i = 0; i < all.length; i++) {
-                      if (q === "" || root.oled.effectLabel(all[i]).toLowerCase().indexOf(q) !== -1)
-                        out.push(all[i])
-                    }
-                    return out
-                  }
-                  delegate: Button {
-                    required property var modelData
-                    width: effectFlow.cell
-                    text: root.oled.effectLabel(modelData)
-                    selected: root.ready && root.oled.preset === "screensaver:" + modelData
-                    bordered: true
-                    fontSize: Style.font.bodySmall
-                    horizontalPadding: Style.space(8)
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    onClicked: if (root.ready) root.oled.setPreset("screensaver:" + modelData)
-                  }
-                }
-              }
-            }
-
-            Text {
-              visible: effectFlow.children.length <= 1
-              textFormat: Text.PlainText
-              text: "No effect matches “" + effectFilter.text + "”"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-            }
+            current: root.ready ? root.oled.preset : ""
+            allTooltip: "Every effect, shuffled — like the real screensaver"
+            onPicked: function(style) { if (root.ready) root.oled.setPreset(style) }
           }
 
           // Images: bundled/online gifs plus your own imports.
@@ -883,12 +805,44 @@ Panel {
               enabled: root.ready && root.oled.hasText && !root.busy
               opacity: enabled ? 1 : 0.4
               options: root.ready
-                ? root.oled.textStyleOrder.map(function(s) { return { value: s, label: s.charAt(0).toUpperCase() + s.slice(1) } })
+                ? root.oled.textStyleOrder.map(function(s) { return { value: s, label: root.oled.textStyleLabel(s) } })
                 : []
-              value: root.ready ? root.oled.textStyle : ""
+              value: root.shownTextStyle
               foreground: root.foreground
               fontFamily: root.fontFamily
               onChanged: function(v) { if (root.ready) root.oled.setTextStyle(v) }
+            }
+
+            PanelSectionHeader {
+              text: "SCREENSAVER EFFECTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            EffectPicker {
+              width: parent.width
+              enabled: root.ready && root.oled.hasText && !root.busy
+              opacity: enabled ? 1 : 0.4
+              visibleRows: 3.5
+              current: root.shownTextStyle
+              allTooltip: "Every effect on your text, shuffled"
+              onPicked: function(style) {
+                if (!root.ready) return
+                if (style === root.oled.textStyle) root.oled.useText()
+                else root.oled.setTextStyle(style)
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: root.ready && root.busy && root.oled.renderingTextStyle !== ""
+                ? "Rendering " + root.oled.textStyleLabel(root.oled.renderingTextStyle).toLowerCase() + "…"
+                : "The logo's screensaver effects, run on your text. All plays every one back to back and takes about 15 seconds to render."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
@@ -1257,6 +1211,104 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  // Every screensaver effect as a searchable grid, with an All chip for
+  // every effect shuffled. The Effects tab plays them on the logo, the Text
+  // tab on your text. `current` is what is playing ("screensaver" or
+  // "screensaver:<effect>"); `picked` hands back the one clicked.
+  component EffectPicker: Column {
+    id: picker
+    property string current: ""
+    property string allTooltip: ""
+    // Whole rows shown before the grid scrolls (a half row cues that it does).
+    property real visibleRows: 5.5
+    signal picked(string style)
+
+    spacing: Style.space(8)
+
+    Row {
+      width: parent.width
+      spacing: Style.space(6)
+
+      TextField {
+        id: effectFilter
+        width: parent.width - shuffleAllButton.width - parent.spacing
+        placeholderText: "Search " + (root.ready ? root.oled.screensaverEffects.length : "") + " effects…"
+        foreground: root.foreground
+        font.family: root.fontFamily
+        Keys.onEscapePressed: text = ""
+      }
+
+      Button {
+        id: shuffleAllButton
+        iconText: "\uF074"
+        text: "All"
+        tooltipText: picker.allTooltip
+        selected: picker.current === "screensaver"
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: picker.picked("screensaver")
+      }
+    }
+
+    Flickable {
+      id: effectScroll
+      width: parent.width
+      readonly property real rowStep: effectFlow.children.length > 1 ? effectFlow.children[0].height + effectFlow.spacing : 1
+      height: Math.min(effectFlow.implicitHeight, rowStep * picker.visibleRows)
+      contentWidth: width
+      contentHeight: effectFlow.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      interactive: contentHeight > height
+
+      // A three-column grid of equal cells reads as a list to pick
+      // from; free-width pills wrapped into a ragged wall.
+      Grid {
+        id: effectFlow
+        width: effectScroll.width
+        columns: 3
+        spacing: Style.space(5)
+        readonly property real cell: (width - spacing * (columns - 1)) / columns
+
+        Repeater {
+          model: {
+            if (!root.ready) return []
+            var q = effectFilter.text.trim().toLowerCase()
+            var all = root.oled.screensaverEffects
+            var out = []
+            for (var i = 0; i < all.length; i++) {
+              if (q === "" || root.oled.effectLabel(all[i]).toLowerCase().indexOf(q) !== -1)
+                out.push(all[i])
+            }
+            return out
+          }
+          delegate: Button {
+            required property var modelData
+            width: effectFlow.cell
+            text: root.oled.effectLabel(modelData)
+            selected: picker.current === "screensaver:" + modelData
+            bordered: true
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.space(8)
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: picker.picked("screensaver:" + modelData)
+          }
+        }
+      }
+    }
+
+    Text {
+      visible: effectFlow.children.length <= 1
+      textFormat: Text.PlainText
+      text: "No effect matches “" + effectFilter.text + "”"
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
     }
   }
 }

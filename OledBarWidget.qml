@@ -92,7 +92,7 @@ BarWidget {
       if (!root.ready) return "OLED"
       if (!root.oled.enabled) return "OLED off"
       if (root.oled.sleeping) return "OLED asleep"
-      return "OLED: " + root.oled.sourceLabel
+      return "OLED: " + root.oled.showingLabel
     }
     onPressed: function(b) {
       if (b === Qt.LeftButton) root.toggle()
