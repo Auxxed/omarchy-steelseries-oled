@@ -48,8 +48,46 @@ Item {
   // out of a heat cycle (or QuickPuff out of reach) for ~20 s.
   property bool peakActive: false
   // The stream reads JSON on stdin: an info screen, or the Peak.
-  readonly property bool streamReadsJson: peakActive || (isInfo && !idleSyncActive)
-  readonly property string showingLabel: peakActive ? "Puffco Peak" : sourceLabel
+  readonly property bool streamReadsJson: peakActive || (!guestActive && isInfo && !idleSyncActive)
+  readonly property string showingLabel: peakActive ? "Puffco Peak" : (guestActive ? guestLabel : sourceLabel)
+
+  // Guest takeover (IPC `guest on NAME` / `guest off`): another program
+  // draws the screen. It writes whole 128x40 frames, as 1280 hex digits (the
+  // Create tab's format), to $XDG_RUNTIME_DIR/oled-guest/NAME.hex, and
+  // apply.py --guest NAME shows the newest one. Like the Peak it is never
+  // saved. The Peak outranks it; sleep and the off switch pause it; picking a
+  // screen here ends it and leaves guestDismissed set, which `guest status`
+  // reports so the guest knows it was sent away. apply.py ends it by itself
+  // when the file has not been written for ten seconds.
+  property bool guestActive: false
+  property string guestName: ""
+  property bool guestDismissed: false
+  readonly property string guestLabel: guestName.charAt(0).toUpperCase() + guestName.slice(1)
+
+  function startGuest(name) {
+    if (!settingsLoaded || pluginDir === "") return "not ready"
+    name = String(name || "")
+    if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(name)) return "name is 1 to 24 of a-z, 0-9 and -"
+    guestDismissed = false
+    if (guestActive && guestName === name) return "already on"
+    guestName = name
+    guestActive = true
+    if (enabled && !sleeping && !peakActive) startWatch()
+    return "ok"
+  }
+
+  function endGuest() {
+    if (!guestActive) return false
+    guestActive = false
+    if (!peakActive) startWatch()
+    return true
+  }
+
+  function dismissGuest() {
+    if (!guestActive) return
+    guestActive = false
+    guestDismissed = true
+  }
 
   // Create tab: a 128x40 1-bit drawing, painted in the panel and streamed
   // live. Pixels live here (not in the panel) so the drawing survives the
@@ -366,6 +404,8 @@ Item {
     // it ends by itself.
     if (peakActive) {
       cmd.push("--info", "peak")
+    } else if (guestActive) {
+      cmd.push("--guest", guestName)
     } else if (isInfo && !idleSyncActive) {
       cmd.push("--info", infoMode)
     } else if (idleSyncActive || preset === "screensaver") {
@@ -650,6 +690,7 @@ Item {
       name = "omarchy"
     // Picking a screen ends a Peak takeover: what you chose shows now.
     peakActive = false
+    dismissGuest()
     preset = name
     if (name === "spin") {
       sourceLabel = "Spin"
@@ -894,7 +935,7 @@ Item {
     drawSaveTimer.start()
     if (!drawAnimated) {
       // Drawing over a Peak takeover ends it, like picking any screen.
-      if (!isDraw || peakActive) setPreset("draw")
+      if (!isDraw || peakActive || guestActive) setPreset("draw")
       return
     }
     drawPreviewStale = true
@@ -1137,6 +1178,11 @@ Item {
       // The Peak stream's own hand-back: out of a heat cycle, or QuickPuff
       // out of reach, for ~20 s.
       if (msg.state === "over") endPeak()
+      return
+    }
+    if (msg.type === "guest") {
+      // The guest stopped writing frames: back to the user's own screen.
+      if (msg.state === "over") endGuest()
       return
     }
     if (msg.type === "status") {
@@ -1692,6 +1738,7 @@ Item {
       } catch (e) {}
       root.keepDelayOnImport = false
       root.peakActive = false
+      root.dismissGuest()
       root.preset = "custom"
       root.hasCustom = true
       root.sourceLabel = label
@@ -1762,6 +1809,15 @@ Item {
     // "on": a Puffco Peak's heat cycle (from QuickPuff) takes the OLED over
     // until "off", or until the Peak has been out of a heat cycle for ~20 s.
     // Never saved; "off" brings back what was showing. "ok" or a reason.
+    // "on NAME": the program writing $XDG_RUNTIME_DIR/oled-guest/NAME.hex
+    // draws the screen until "off", or until it stops writing. "status" says
+    // "on NAME", "off", or "dismissed" after a screen was picked over it.
+    function guest(state: string, name: string): string {
+      if (state === "on") return root.startGuest(name)
+      if (state === "off") return root.endGuest() ? "ok" : "not on"
+      if (state === "status") return root.guestActive ? "on " + root.guestName : (root.guestDismissed ? "dismissed" : "off")
+      return "use on NAME, off or status"
+    }
     function peak(state: string): string {
       if (state === "on") return root.startPeak()
       if (state === "off") return root.endPeak() ? "ok" : "not on"

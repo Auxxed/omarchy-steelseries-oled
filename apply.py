@@ -9,6 +9,8 @@ Streaming (the shell keeps one of these running):
   apply.py --watch [--invert] --frames F [--frames F ...] --rest R [--delay-ms N]
   apply.py --watch --live - [--live-hex HEX]   frames as hex lines on stdin
   apply.py --watch --info clock|system|media   media details as JSON on stdin
+  apply.py --watch --guest NAME                 frames another program writes to
+                                               $XDG_RUNTIME_DIR/oled-guest/NAME.hex
   apply.py --watch --info peak                 a Puffco Peak heat cycle, read
                                                from QuickPuff's daemon socket
 
@@ -761,6 +763,20 @@ def parse_hex_frame(text: str) -> bytes | None:
     return payload if len(payload) == PAYLOAD_BYTES else None
 
 
+# --guest: how often to look at the guest's frame file, and how long it may
+# go unwritten before the screen is handed back.
+GUEST_POLL_S = 0.1
+GUEST_STALE_S = 10.0
+GUEST_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
+
+
+def guest_path(name: str) -> str:
+    if not GUEST_NAME.fullmatch(name):
+        raise SystemExit("--guest is a name of 1 to 24 of a-z, 0-9 and -")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.geteuid()}"
+    return os.path.join(runtime, "oled-guest", name + ".hex")
+
+
 # --- sources -------------------------------------------------------------------------
 
 
@@ -802,6 +818,42 @@ class Live(Frames):
             return False
         self.frames = [payload]
         return True
+
+
+class Guest(Live):
+    """Another program's frames: the newest whole frame (hex, as --live) in
+    its file under $XDG_RUNTIME_DIR/oled-guest. The file must be a regular
+    file of ours. When it has not been written for GUEST_STALE_S the stream
+    says {"type": "guest", "state": "over"} and ends."""
+
+    def __init__(self, name: str, invert: bool, clock=time.time):
+        super().__init__(bytes(PAYLOAD_BYTES), invert)
+        self.path = guest_path(name)
+        self.clock = clock
+        self.done = False
+        self.next_poll = 0.0
+        self.seen = clock()
+        self.stamp = 0.0
+
+    def poll(self, now: float) -> bool:
+        if self.done or now < self.next_poll:
+            return False
+        self.next_poll = now + GUEST_POLL_S
+        changed = False
+        try:
+            stamp = os.stat(self.path, follow_symlinks=False).st_mtime
+            if stamp != self.stamp:
+                text = read_bounded(self.path, DRAWING_HEX_CHARS + 16, owned=True).decode("ascii", "replace")
+                self.stamp = stamp
+                if parse_hex_frame(text) is not None:
+                    self.seen = self.clock()
+                    changed = self.feed(text)
+        except OSError:
+            pass
+        if self.clock() - self.seen > GUEST_STALE_S:
+            self.done = True
+            print(json.dumps({"type": "guest", "state": "over"}, separators=(",", ":")), flush=True)
+        return changed
 
 
 class Canvas:
@@ -1765,6 +1817,7 @@ def main() -> None:
     live_opt = take_opt(args, "--live")
     live_hex_opt = take_opt(args, "--live-hex")
     info_opt = take_opt(args, "--info")
+    guest_opt = take_opt(args, "--guest")
     hex_opt = take_opt(args, "--hex")
     render_drawing_opt = take_opt(args, "--render-drawing")
     if preview_suffix_opt is not None and not preview_suffix_opt.isdigit():
@@ -1833,6 +1886,11 @@ def main() -> None:
         if info_opt not in INFO_MODES:
             raise SystemExit("--info is one of " + ", ".join(INFO_MODES + (PEAK_MODE,)))
         watch(Info(info_opt, invert=invert), StdinLines())
+        return
+    if guest_opt is not None:
+        if not watch_mode:
+            raise SystemExit("--guest needs --watch")
+        watch(Guest(guest_opt, invert), StdinLines())
         return
     if live_opt is not None:
         if not watch_mode or live_opt != "-":
